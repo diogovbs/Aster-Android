@@ -105,14 +105,7 @@ class ContactsRepository @Inject constructor(
         val seen_cursors = mutableSetOf<String>()
         var cursor: String? = null
         while (true) {
-            val page = try {
-                contacts_api.list_contacts(limit = 100, cursor = cursor, group_id = group_id)
-            } catch (t: kotlin.coroutines.cancellation.CancellationException) {
-                throw t
-            } catch (t: Throwable) {
-                if (cursor == null) throw t
-                break
-            }
+            val page = contacts_api.list_contacts(limit = 100, cursor = cursor, group_id = group_id)
             all.addAll(page.items)
             val next = page.next_cursor
             if (!page.has_more || next.isNullOrBlank() || !seen_cursors.add(next)) break
