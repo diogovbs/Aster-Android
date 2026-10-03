@@ -200,6 +200,7 @@ class MainActivity :
         const val EXTRA_OPEN_SESSIONS = "open_sessions"
         private const val FIRST_FRAME_INSET_TIMEOUT_MS = 1000L
         private const val CONTENT_INSET_TIMEOUT_MS = 4000L
+        private const val STATE_LAUNCH_PENDING = "launch_intent_pending"
     }
 
     private val insets_applied = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -237,8 +238,11 @@ class MainActivity :
                 secure_storage_ready.value = true
             }
         }
-        consume_open_email_extra(intent)
-        consume_share_intent(intent)
+        if (saved_instance_state == null) note_launch_folder(intent)
+        if (saved_instance_state == null || saved_instance_state.getBoolean(STATE_LAUNCH_PENDING)) {
+            consume_open_email_extra(intent)
+            consume_share_intent(intent)
+        }
         apply_boot_background()
         enableEdgeToEdge()
         setContent {
@@ -296,11 +300,29 @@ class MainActivity :
         }
     }
 
+    override fun onSaveInstanceState(out_state: Bundle) {
+        super.onSaveInstanceState(out_state)
+        out_state.putBoolean(STATE_LAUNCH_PENDING, pending_launch.has_pending_target())
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         consume_open_email_extra(intent)
         consume_share_intent(intent)
+    }
+
+    private fun note_launch_folder(intent: Intent?) {
+        val extra_keys = runCatching { intent?.extras?.keySet()?.toSet() }.getOrNull().orEmpty()
+        val plain = org.astermail.android.mail.is_plain_launch(
+            action = intent?.action,
+            has_data = intent?.data != null,
+            extra_keys = extra_keys,
+            target_extra_keys = setOf(EXTRA_OPEN_EMAIL_ID, EXTRA_OPEN_SESSIONS),
+        )
+        if (plain) {
+            pending_launch.launch_folder.value = org.astermail.android.mail.launch_folder_store.load(this)
+        }
     }
 
     private fun consume_share_intent(intent: Intent?) {
@@ -396,6 +418,20 @@ class pending_launch_state {
     val pending_reveal_folder_tokens = mutableStateOf<List<String>?>(null)
     val pending_share = mutableStateOf<org.astermail.android.share.SharePayload?>(null)
     val pending_share_token = mutableStateOf("")
+    val launch_folder = mutableStateOf<String?>(null)
+
+    fun has_pending_target(): Boolean =
+        pending_open_email_id.value != null ||
+            pending_reveal_email_id.value != null ||
+            pending_share.value != null ||
+            pending_open_sessions.value ||
+            pending_open_billing.value
+
+    fun take_launch_folder(): String? {
+        val value = launch_folder.value
+        launch_folder.value = null
+        return value
+    }
 }
 
 val local_pending_launch = androidx.compose.runtime.staticCompositionLocalOf<pending_launch_state> {
@@ -417,7 +453,7 @@ private object routes {
     const val register = "register"
 
     fun sign_in_for(email: String): String {
-        val encoded = java.net.URLEncoder.encode(email, "UTF-8")
+        val encoded = android.net.Uri.encode(email)
         return "sign_in?email=$encoded"
     }
     const val forgot_password = "forgot_password"
@@ -427,7 +463,7 @@ private object routes {
     const val crypto_invoice = "crypto_invoice/{invoice_id}"
 
     fun crypto_invoice_for(invoice_id: String): String {
-        val encoded = java.net.URLEncoder.encode(invoice_id, "UTF-8")
+        val encoded = android.net.Uri.encode(invoice_id)
         return "crypto_invoice/$encoded"
     }
     const val folder_filter = "folder/{folder_id}/{folder_name}"
@@ -435,18 +471,18 @@ private object routes {
     const val alias_filter = "alias/{alias_id}/{alias_name}"
 
     fun folder_filter_for(folder_id: String, folder_name: String): String {
-        val id = java.net.URLEncoder.encode(folder_id, "UTF-8")
-        val name = java.net.URLEncoder.encode(folder_name, "UTF-8")
+        val id = android.net.Uri.encode(folder_id)
+        val name = android.net.Uri.encode(folder_name)
         return "folder/$id/$name"
     }
     fun label_filter_for(label_id: String, label_name: String): String {
-        val id = java.net.URLEncoder.encode(label_id, "UTF-8")
-        val name = java.net.URLEncoder.encode(label_name, "UTF-8")
+        val id = android.net.Uri.encode(label_id)
+        val name = android.net.Uri.encode(label_name)
         return "label/$id/$name"
     }
     fun alias_filter_for(alias_id: String, alias_name: String): String {
-        val id = java.net.URLEncoder.encode(alias_id, "UTF-8")
-        val name = java.net.URLEncoder.encode(alias_name, "UTF-8")
+        val id = android.net.Uri.encode(alias_id)
+        val name = android.net.Uri.encode(alias_name)
         return "alias/$id/$name"
     }
     const val compose = "compose?reply_to={reply_to}&mode={mode}&draft_id={draft_id}&to={to}&thread_ghost={thread_ghost}&share={share}"
@@ -467,24 +503,24 @@ private object routes {
     }
 
     fun compose_new(to: String = ""): String {
-        val encoded_to = if (to.isNotBlank()) java.net.URLEncoder.encode(to, "UTF-8") else ""
+        val encoded_to = if (to.isNotBlank()) android.net.Uri.encode(to) else ""
         return "compose?reply_to=&mode=&draft_id=&to=$encoded_to&thread_ghost="
     }
     fun compose_reply(msg_id: String, mode: String, thread_ghost: String? = null): String {
-        val encoded_msg = java.net.URLEncoder.encode(msg_id, "UTF-8")
-        val encoded_mode = java.net.URLEncoder.encode(mode, "UTF-8")
-        val encoded_ghost = if (!thread_ghost.isNullOrBlank()) java.net.URLEncoder.encode(thread_ghost, "UTF-8") else ""
+        val encoded_msg = android.net.Uri.encode(msg_id)
+        val encoded_mode = android.net.Uri.encode(mode)
+        val encoded_ghost = if (!thread_ghost.isNullOrBlank()) android.net.Uri.encode(thread_ghost) else ""
         return "compose?reply_to=$encoded_msg&mode=$encoded_mode&draft_id=&to=&thread_ghost=$encoded_ghost"
     }
     fun compose_from(address: String): String {
-        val encoded = java.net.URLEncoder.encode(address, "UTF-8")
+        val encoded = android.net.Uri.encode(address)
         return "compose?reply_to=&mode=&draft_id=&to=&thread_ghost=$encoded"
     }
     fun compose_share(token: String): String {
         return "compose?reply_to=&mode=&draft_id=&to=&thread_ghost=&share=$token"
     }
     fun compose_draft(draft_id: String): String {
-        val encoded = java.net.URLEncoder.encode(draft_id, "UTF-8")
+        val encoded = android.net.Uri.encode(draft_id)
         return "compose?reply_to=&mode=draft&draft_id=$encoded&to=&thread_ghost="
     }
     const val pending_send_preview = "pending_send_preview"
@@ -499,12 +535,12 @@ private object routes {
     const val domain_order = "domain_order/{order_id}"
     const val domain_bimi = "settings_domain_bimi/{domain_id}"
 
-    fun mail_detail_for(email_id: String) = "mail_detail/" + java.net.URLEncoder.encode(email_id, "UTF-8")
+    fun mail_detail_for(email_id: String) = "mail_detail/" + android.net.Uri.encode(email_id)
     fun settings_detail(id: String) = "settings_$id"
 
     const val alias_detail = "settings_alias_detail/{alias_id}"
     fun alias_detail_for(alias_id: String): String {
-        val encoded = java.net.URLEncoder.encode(alias_id, "UTF-8")
+        val encoded = android.net.Uri.encode(alias_id)
         return "settings_alias_detail/$encoded"
     }
 
@@ -513,7 +549,7 @@ private object routes {
             org.astermail.android.ui.settings.detail.SETTINGS_FOCUS_LOW_NETWORK
     fun domain_order_for(order_id: String) = "domain_order/$order_id"
     fun domain_bimi_for(domain_id: String) =
-        "settings_domain_bimi/" + java.net.URLEncoder.encode(domain_id, "UTF-8")
+        "settings_domain_bimi/" + android.net.Uri.encode(domain_id)
     fun contact_detail_for(contact_id: String) = "contact_detail/$contact_id"
     fun contact_edit_for(contact_id: String) = "contact_edit/$contact_id"
 }
@@ -771,7 +807,6 @@ private fun AsterNavHost() {
         ) { entry ->
             val raw_email = entry.arguments?.getString("email")
             val prefill = raw_email?.takeIf { it.isNotBlank() }
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
                 .orEmpty()
             val sign_in_settings_vm = org.astermail.android.settings.shared_settings_view_model()
             SignInScreen(
@@ -851,8 +886,8 @@ private fun AsterNavHost() {
         }
         composable(routes.forgot_password) {
             ForgotPasswordScreen(
-                on_back = { nav_controller.popBackStack() },
-                on_submit = { _ -> nav_controller.popBackStack() },
+                on_back = { pop_once(nav_controller) },
+                on_submit = { _ -> pop_once(nav_controller) },
             )
         }
         composable(routes.inbox) {
@@ -933,11 +968,11 @@ private fun AsterNavHost() {
                     "Go to previous message" -> neighbor_id(-1)
                     else -> null
                 }
-                if (next != null) open_neighbor(next) else nav_controller.popBackStack()
+                if (next != null) open_neighbor(next) else pop_once(nav_controller)
             }
             MailDetailScreen(
                 email_id = email_id,
-                on_back = { nav_controller.popBackStack() },
+                on_back = { pop_once(nav_controller) },
                 on_reply = { msg_id, ghost ->
                     org.astermail.android.ui.compose.publish_compose_thread_seed(detail_thread_state)
                     context.startActivity(ComposeActivity.intent_for(context, reply_to = msg_id, mode = "reply", thread_ghost_email = ghost))
@@ -962,7 +997,7 @@ private fun AsterNavHost() {
                         path.startsWith("search:") -> routes.search_for(path.removePrefix("search:"))
                         else -> null
                     }
-                    if (route != null) nav_controller.navigate(route)
+                    if (route != null) navigate_once(nav_controller, route)
                 },
                 mail_vm = shared_mail_vm,
                 settings_vm = shared_settings_vm,
@@ -975,12 +1010,8 @@ private fun AsterNavHost() {
                 navArgument("folder_name") { type = NavType.StringType },
             ),
         ) { entry ->
-            val id = java.net.URLDecoder.decode(
-                entry.arguments?.getString("folder_id").orEmpty(), "UTF-8",
-            )
-            val name = java.net.URLDecoder.decode(
-                entry.arguments?.getString("folder_name").orEmpty(), "UTF-8",
-            )
+            val id = entry.arguments?.getString("folder_id").orEmpty()
+            val name = entry.arguments?.getString("folder_name").orEmpty()
             val inbox_entry = remember(entry) {
                 try { nav_controller.getBackStackEntry(routes.inbox) } catch (_: Throwable) { null }
             }
@@ -990,7 +1021,7 @@ private fun AsterNavHost() {
                 filter_type = FilterType.folder,
                 filter_value = id,
                 filter_display_name = name,
-                on_open_drawer = { nav_controller.popBackStack() },
+                on_open_drawer = { pop_once(nav_controller) },
                 on_open_email = { eid -> open_mail_detail(nav_controller, eid) },
                 mail_vm = shared_mail_vm,
             )
@@ -1002,12 +1033,8 @@ private fun AsterNavHost() {
                 navArgument("label_name") { type = NavType.StringType },
             ),
         ) { entry ->
-            val id = java.net.URLDecoder.decode(
-                entry.arguments?.getString("label_id").orEmpty(), "UTF-8",
-            )
-            val name = java.net.URLDecoder.decode(
-                entry.arguments?.getString("label_name").orEmpty(), "UTF-8",
-            )
+            val id = entry.arguments?.getString("label_id").orEmpty()
+            val name = entry.arguments?.getString("label_name").orEmpty()
             val inbox_entry = remember(entry) {
                 try { nav_controller.getBackStackEntry(routes.inbox) } catch (_: Throwable) { null }
             }
@@ -1017,7 +1044,7 @@ private fun AsterNavHost() {
                 filter_type = FilterType.label,
                 filter_value = id,
                 filter_display_name = name,
-                on_open_drawer = { nav_controller.popBackStack() },
+                on_open_drawer = { pop_once(nav_controller) },
                 on_open_email = { eid -> open_mail_detail(nav_controller, eid) },
                 mail_vm = shared_mail_vm,
             )
@@ -1029,12 +1056,8 @@ private fun AsterNavHost() {
                 navArgument("alias_name") { type = NavType.StringType },
             ),
         ) { entry ->
-            val id = java.net.URLDecoder.decode(
-                entry.arguments?.getString("alias_id").orEmpty(), "UTF-8",
-            )
-            val name = java.net.URLDecoder.decode(
-                entry.arguments?.getString("alias_name").orEmpty(), "UTF-8",
-            )
+            val id = entry.arguments?.getString("alias_id").orEmpty()
+            val name = entry.arguments?.getString("alias_name").orEmpty()
             val inbox_entry = remember(entry) {
                 try { nav_controller.getBackStackEntry(routes.inbox) } catch (_: Throwable) { null }
             }
@@ -1044,7 +1067,7 @@ private fun AsterNavHost() {
                 filter_type = FilterType.alias,
                 filter_value = id,
                 filter_display_name = name,
-                on_open_drawer = { nav_controller.popBackStack() },
+                on_open_drawer = { pop_once(nav_controller) },
                 on_open_email = { eid -> open_mail_detail(nav_controller, eid) },
                 mail_vm = shared_mail_vm,
             )
@@ -1101,23 +1124,18 @@ private fun AsterNavHost() {
             val raw_to = entry.arguments?.getString("to")
             val raw_thread_ghost = entry.arguments?.getString("thread_ghost")
             val reply_to = raw_reply_to?.takeIf { it.isNotBlank() }
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
             val mode = raw_mode?.takeIf { it.isNotBlank() }
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
             val draft_id = raw_draft_id?.takeIf { it.isNotBlank() }
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
             val prefill_to = raw_to?.takeIf { it.isNotBlank() }
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
             val thread_ghost_email = raw_thread_ghost?.takeIf { it.isNotBlank() }
-                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
             val is_share_entry = !entry.arguments?.getString("share").isNullOrBlank()
             val share_payload = remember(entry.id) {
                 if (!is_share_entry) null
                 else pending.pending_share.value.also { pending.pending_share.value = null }
             }
             ComposeScreen(
-                on_back = { nav_controller.popBackStack() },
-                on_sent = { nav_controller.popBackStack() },
+                on_back = { pop_entry(nav_controller, entry) },
+                on_sent = { pop_entry(nav_controller, entry) },
                 reply_to = reply_to,
                 mode = mode,
                 draft_id = draft_id,
@@ -1155,39 +1173,39 @@ private fun AsterNavHost() {
                 mail_vm = if (inbox_entry != null) hiltViewModel(inbox_entry) else hiltViewModel(),
             )
         }
-        composable(routes.pending_send_preview) {
+        composable(routes.pending_send_preview) { entry ->
             org.astermail.android.ui.mail.pending_send_preview_screen(
-                on_back = { nav_controller.popBackStack() },
+                on_back = { pop_entry(nav_controller, entry) },
             )
         }
         composable(routes.settings) {
             SettingsScreen(
-                on_back = { nav_controller.popBackStack() },
-                on_open = { id -> nav_controller.navigate(routes.settings_detail(id)) },
+                on_back = { pop_once(nav_controller) },
+                on_open = { id -> navigate_once(nav_controller, routes.settings_detail(id)) },
             )
         }
         composable(routes.settings_search) {
             org.astermail.android.ui.settings.settings_search_screen(
                 on_back = { pop_once(nav_controller) },
-                on_open = { id -> nav_controller.navigate(routes.settings_detail(id)) },
+                on_open = { id -> navigate_once(nav_controller, routes.settings_detail(id)) },
             )
         }
         composable(routes.mailing_lists) {
             MailingListsScreen(
-                on_back = { nav_controller.popBackStack(); Unit },
-                on_open_search = { nav_controller.navigate(routes.search) },
+                on_back = { pop_once(nav_controller) },
+                on_open_search = { navigate_once(nav_controller, routes.search) },
                 on_search_sender = { sender ->
                     org.astermail.android.ui.search.build_sender_mail_query(sender)?.let { query ->
-                        nav_controller.navigate(routes.search_for(query))
+                        navigate_once(nav_controller, routes.search_for(query))
                     }
                 },
             )
         }
         composable(routes.contacts) {
             ContactsScreen(
-                on_back = { nav_controller.popBackStack() },
-                on_open_contact = { id -> nav_controller.navigate(routes.contact_detail_for(id)) },
-                on_create_contact = { nav_controller.navigate(routes.contact_edit_new) },
+                on_back = { pop_once(nav_controller) },
+                on_open_contact = { id -> navigate_once(nav_controller, routes.contact_detail_for(id)) },
+                on_create_contact = { navigate_once(nav_controller, routes.contact_edit_new) },
                 on_compose_to = { addresses ->
                     context.startActivity(
                         ComposeActivity.intent_for(context, prefill_to = addresses.joinToString(",")),
@@ -1209,10 +1227,10 @@ private fun AsterNavHost() {
                 if (contacts_entry != null) hiltViewModel(contacts_entry) else hiltViewModel()
             ContactDetailScreen(
                 contact_id = id,
-                on_back = { nav_controller.popBackStack() },
-                on_edit = { cid -> nav_controller.navigate(routes.contact_edit_for(cid)) },
+                on_back = { pop_entry(nav_controller, entry) },
+                on_edit = { cid -> navigate_once(nav_controller, routes.contact_edit_for(cid)) },
                 on_compose = { email -> context.startActivity(ComposeActivity.intent_for(context, prefill_to = email)) },
-                on_search_mail = { query -> nav_controller.navigate(routes.search_for(query)) },
+                on_search_mail = { query -> navigate_once(nav_controller, routes.search_for(query)) },
                 vm = shared_contacts_vm,
             )
         }
@@ -1226,8 +1244,8 @@ private fun AsterNavHost() {
                 if (contacts_entry != null) hiltViewModel(contacts_entry) else hiltViewModel()
             ContactEditScreen(
                 contact_id = null,
-                on_back = { nav_controller.popBackStack() },
-                on_saved = { nav_controller.popBackStack() },
+                on_back = { pop_once(nav_controller) },
+                on_saved = { pop_entry(nav_controller, entry) },
                 vm = shared_contacts_vm,
             )
         }
@@ -1245,14 +1263,14 @@ private fun AsterNavHost() {
                 if (contacts_entry != null) hiltViewModel(contacts_entry) else hiltViewModel()
             ContactEditScreen(
                 contact_id = id,
-                on_back = { nav_controller.popBackStack() },
-                on_saved = { nav_controller.popBackStack() },
+                on_back = { pop_once(nav_controller) },
+                on_saved = { pop_entry(nav_controller, entry) },
                 vm = shared_contacts_vm,
             )
         }
 
-        val back = { nav_controller.popBackStack() }
-        val open_detail: (String) -> Unit = { id -> nav_controller.navigate(routes.settings_detail(id)) }
+        val back = { pop_once(nav_controller) }
+        val open_detail: (String) -> Unit = { id -> navigate_once(nav_controller, routes.settings_detail(id)) }
 
         composable(routes.settings_detail("appearance")) {
             AppearanceScreen(on_back = { back(); Unit }, on_open = open_detail)
@@ -1275,11 +1293,11 @@ private fun AsterNavHost() {
                 on_open = open_detail,
             )
         }
-        composable(routes.settings_detail("password")) {
-            ChangePasswordScreen(on_back = { back(); Unit })
+        composable(routes.settings_detail("password")) { entry ->
+            ChangePasswordScreen(on_back = { pop_entry(nav_controller, entry) })
         }
-        composable(routes.settings_detail("change_password")) {
-            ChangePasswordScreen(on_back = { back(); Unit })
+        composable(routes.settings_detail("change_password")) { entry ->
+            ChangePasswordScreen(on_back = { pop_entry(nav_controller, entry) })
         }
         composable(routes.settings_detail("two_factor")) {
             TwoFactorScreen(on_back = { back(); Unit })
@@ -1689,8 +1707,22 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
     val pending = local_pending_launch.current
     val drawer_state = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var selected_folder by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("inbox") }
-    var inbox_category by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("primary") }
+    val settings_vm: org.astermail.android.settings.SettingsViewModel = org.astermail.android.settings.shared_settings_view_model()
+    val launch_prefs = settings_vm.state.value.preferences
+    val launch_target = remember {
+        val stored = pending.take_launch_folder()
+        org.astermail.android.mail.resolve_launch_destination(
+            stored = stored,
+            plain_launch = stored != null,
+            has_pending_target = pending.has_pending_target(),
+            categories_enabled = launch_prefs?.inbox_categories_enabled ?: true,
+            active_category_tabs = launch_prefs
+                ?.let { org.astermail.android.mail.active_category_tabs(it.enabled_categories, emptyList(), 0) }
+                ?: org.astermail.android.mail.CATEGORY_TABS,
+        )
+    }
+    var selected_folder by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(launch_target.folder) }
+    var inbox_category by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(launch_target.category) }
     var filter_kind by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var all_mail_include_spam by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var all_mail_include_trash by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
@@ -1716,7 +1748,6 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
     val stats = inbox_state.stats
     val label_unread_deltas by mail_vm.label_unread_deltas.collectAsStateWithLifecycle()
 
-    val settings_vm: org.astermail.android.settings.SettingsViewModel = org.astermail.android.settings.shared_settings_view_model()
     val settings_state by settings_vm.state.collectAsStateWithLifecycle()
     androidx.compose.runtime.LaunchedEffect(settings_state.labels) {
         mail_vm.on_labels_loaded(System.identityHashCode(settings_state.labels))
@@ -1949,14 +1980,28 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
         ?: accounts_state.accounts.firstOrNull()?.email
         ?: ""
 
-    val folder_nodes = org.astermail.android.folders.flatten_folder_tree(settings_state.labels)
+    val folder_nodes = remember(settings_state.labels) {
+        org.astermail.android.folders.flatten_folder_tree(settings_state.labels)
+    }
+    val folder_index = remember(settings_state.labels) {
+        org.astermail.android.folders.folder_tree_index(settings_state.labels)
+    }
 
     val muted_folder_tokens = settings_state.preferences?.muted_folder_tokens.orEmpty()
 
-    val api_folders = folder_nodes.map { node ->
+    val lock_revision by org.astermail.android.folders.folder_lock_store.revision.collectAsState()
+
+    val api_folders = remember(
+        folder_nodes,
+        folder_index,
+        label_unread_deltas,
+        muted_folder_tokens,
+        lock_revision,
+        drawer_context,
+    ) { folder_nodes.map { node ->
         val label = node.label
         val readable_name = label.encrypted_name?.takeIf { it.isNotBlank() && !looks_encrypted(it) }
-        val siblings = org.astermail.android.folders.folder_sibling_group(settings_state.labels, label.id)
+        val siblings = folder_index.sibling_group(label.id)
         val sibling_index = siblings.indexOfFirst { it.id == label.id }
         drawer_folder_item(
             id = label.label_token,
@@ -1979,14 +2024,11 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
             can_move_down = sibling_index >= 0 && sibling_index < siblings.lastIndex,
             can_have_children = node.depth < org.astermail.android.folders.max_folder_depth,
             parent_token = label.parent_token?.takeIf { it.isNotBlank() },
-            blocked_parent_tokens = org.astermail.android.folders.descendant_tokens(
-                settings_state.labels,
-                label.label_token,
-            ),
+            blocked_parent_tokens = folder_index.descendant_tokens(label.label_token),
         )
-    }
+    } }
 
-    val folder_parent_options = folder_nodes
+    val folder_parent_options = remember(folder_nodes, folder_index) { folder_nodes
         .filter { it.depth < org.astermail.android.folders.max_folder_depth }
         .mapNotNull { node ->
             val label = node.label
@@ -1996,14 +2038,14 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
                 token = label.label_token,
                 label = readable_name,
                 depth = node.depth,
-                path_label = org.astermail.android.folders.folder_path(settings_state.labels, label.label_token)
+                path_label = folder_index.path(label.label_token)
                     .filter { it.isNotBlank() && !looks_encrypted(it) }
                     .joinToString(" · "),
                 color = label.encrypted_color?.takeIf { it.startsWith("#") },
             )
-        }
+        } }
 
-    val quick_custom_folders = folder_nodes
+    val quick_custom_folders = remember(folder_nodes) { folder_nodes
         .mapNotNull { node ->
             val readable_name = node.label.encrypted_name?.takeIf { it.isNotBlank() && !looks_encrypted(it) }
                 ?: return@mapNotNull null
@@ -2015,7 +2057,7 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
                 parent_id = node.label.parent_token?.takeIf { it.isNotBlank() },
                 color = node.label.encrypted_color?.takeIf { it.startsWith("#") },
             )
-        }
+        } }
 
     val quick_folder_counts = buildMap {
         put("inbox", stats?.unread ?: 0)
@@ -2041,7 +2083,7 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
         Color(0xFF6366F1),
     )
 
-    val api_labels = run {
+    val api_labels = remember(settings_state.tags, settings_state.labels) {
         val visible_tags = org.astermail.android.labels.tag_rows(settings_state.tags)
         val from_tags = visible_tags
             .mapIndexed { idx, tag ->
@@ -2082,7 +2124,7 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
         from_tags + from_labels
     }
 
-    val api_aliases = settings_state.aliases
+    val api_aliases = remember(settings_state.aliases, settings_state.custom_domain_addresses) { settings_state.aliases
         .filter { it.is_enabled && !looks_encrypted(it.encrypted_local_part) }
         .map { alias ->
             drawer_alias_item(
@@ -2097,9 +2139,7 @@ private fun InboxWithDrawer(nav_controller: NavHostController) {
                 id = addr.id,
                 address = addr.address,
             )
-        }
-
-    val lock_revision by org.astermail.android.folders.folder_lock_store.revision.collectAsState()
+        } }
 
     var pending_unlock_folder by remember { mutableStateOf<Pair<String, String>?>(null) }
     var unlock_verifying by remember { mutableStateOf(false) }
@@ -2818,6 +2858,17 @@ private fun pop_once(nav_controller: NavHostController) {
     val entry = nav_controller.currentBackStackEntry ?: return
     if (!entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
     nav_controller.popBackStack()
+}
+
+private fun pop_entry(nav_controller: NavHostController, entry: androidx.navigation.NavBackStackEntry) {
+    if (nav_controller.currentBackStackEntry?.id != entry.id) return
+    nav_controller.popBackStack()
+}
+
+private fun navigate_once(nav_controller: NavHostController, route: String) {
+    val entry = nav_controller.currentBackStackEntry ?: return
+    if (!entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+    nav_controller.navigate(route) { launchSingleTop = true }
 }
 
 private fun open_mail_detail(nav_controller: NavHostController, email_id: String) {
