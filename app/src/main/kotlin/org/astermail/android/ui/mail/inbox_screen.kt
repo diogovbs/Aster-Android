@@ -767,15 +767,24 @@ fun InboxScreen(
             }
         }
     val state_matches_folder = inbox_state.current_folder == current_folder
+    val email_row_cache = remember(settings_state.tags, settings_state.labels, current_folder, toast_context) {
+        HashMap<org.astermail.android.mail.InboxItem, Email>()
+    }
     val api_emails = remember(inbox_state.items, settings_state.tags, attachment_ids, settings_state.labels, current_folder, state_matches_folder) {
         if (!state_matches_folder) return@remember null
+        val previous_rows = HashMap(email_row_cache)
+        email_row_cache.clear()
         inbox_state.items.map {
-            inbox_item_to_email(
-                if (!it.has_attachments && it.id in attachment_ids) it.copy(has_attachments = true) else it,
-                settings_state.tags,
-                folder_chip = all_mail_folder_chip?.invoke(it),
-                context = toast_context,
-            )
+            val item = if (!it.has_attachments && it.id in attachment_ids) it.copy(has_attachments = true) else it
+            val email = previous_rows[it]?.takeIf { cached -> cached.has_attachment == item.has_attachments }
+                ?: inbox_item_to_email(
+                    item,
+                    settings_state.tags,
+                    folder_chip = all_mail_folder_chip?.invoke(it),
+                    context = toast_context,
+                )
+            email_row_cache[it] = email
+            email
         }
     }
     val emails = remember {
