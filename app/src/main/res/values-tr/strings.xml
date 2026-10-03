@@ -220,6 +220,7 @@
     <string name="block_sender">Göndereni engelle</string>
     <string name="message_unavailable">Mesaj kullanılamıyor</string>
     <string name="message_replaced_or_deleted">Bu ileti silindi veya daha yeni bir kopyayla değiştirildi. Bulmak için geri dönüp yeniden arayın.</string>
+    <string name="message_unavailable_offline">Bu ileti çevrimdışı kullanılamıyor. Yeniden çevrimiçi olduğunuzda açılır.</string>
     <string name="no_subject">(konu yok)</string>
     <string name="open_external_link">Harici bağlantı açılsın mı?</string>
     <string name="leaving_aster_warning">Aster\'den ayrılmak ve bu bağlantıyı tarayıcınızda açmak üzeresiniz:</string>
@@ -3351,4 +3352,8 @@
     <string name="domain_dkim_rotated_auto">DKIM anahtarı döndürüldü. Aster Mail DNS kaydını sizin için güncelledi.</string>
     <string name="domain_dkim_notice_title">Bunu yeni bir DNS kaydı olarak ekleyin</string>
     <string name="domain_dkim_notice_body">Postalarınız zaten yeni anahtarla imzalanıyor. DKIM denetimlerini geçmek için bu TXT kaydını DNS sağlayıcınıza ekleyin.</string>
+    <string name="move_to_category">Kategoriye taşı</string>
+    <string name="moved_to_category">Kategoriye taşındı</string>
+    <string name="metadata_undecryptable_change">Bu cihaz bu mesajın ayrıntılarını açamıyor, bu yüzden değişikliğiniz kaydedilmiyor. Anahtarlarınızı yeniden yüklemek için oturumu kapatıp yeniden açın. Sunucudaki mesajınız değişmeden duruyor.</string>
+    <string name="color_swatch_option">Renk %1$d / %2$d</string>
 </resources>
