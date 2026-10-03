@@ -56,6 +56,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.content.consume
@@ -158,6 +159,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.res.pluralStringResource
@@ -1350,7 +1352,7 @@ fun ComposeScreen(
             if (result.isSuccess) {
                 current_draft_id = result.getOrNull().orEmpty()
                 draft_status = context.getString(R.string.saved)
-            } else {
+            } else if (isActive) {
                 draft_status = context.getString(R.string.save_failed)
             }
         }
@@ -4671,6 +4673,12 @@ internal fun signature_html_web_preview(html: String, modifier: Modifier = Modif
             wv.tag = html
             wv.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null)
         },
+        onRelease = { wv ->
+            runCatching {
+                wv.stopLoading()
+                wv.destroy()
+            }
+        },
         modifier = modifier,
     )
 }
@@ -5111,7 +5119,7 @@ private fun toggle_sheet_row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(SquircleShape(8.dp))
-            .clickable(onClick = on_click)
+            .selectable(selected = active, onClick = on_click)
             .padding(horizontal = AsterSpacing.sm, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

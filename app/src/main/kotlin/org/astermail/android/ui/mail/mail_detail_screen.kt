@@ -276,14 +276,10 @@ internal fun plain_text_fallback_document(raw: String, bg_hex: String, fg_hex: S
         "<div id=\"m\">" + plain_text_fallback_body(raw) + "</div></body></html>"
 
 private const val BODY_PENDING_TIMEOUT_MS = 12_000L
+private const val SLOW_LINK_BODY_PENDING_TIMEOUT_MS = 65_000L
 
 private val EXTERNAL_RESOURCE_PATTERN = Regex(
     """(?:src\s*=\s*["']https?://|background\s*=\s*["']https?://|url\s*\(\s*["']?https?://|@font-face)""",
-    RegexOption.IGNORE_CASE,
-)
-
-private val IMG_TAG_PATTERN = Regex(
-    """<img\b[^>]*\bsrc\s*=\s*["']https?://[^"']+["'][^>]*>""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -313,7 +309,6 @@ internal data class ExternalContentCounts(
 
 private const val EXTERNAL_ITEM_LIST_CAP = 60
 
-private val SRC_URL_PATTERN = Regex("""(?<![-\w])src\s*=\s*["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
 private val HREF_URL_PATTERN = Regex("""(?<![-\w])href\s*=\s*["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
 private val FONT_URL_PATTERN = Regex("""url\s*\(\s*["']?(https?://[^"')]+)""", RegexOption.IGNORE_CASE)
 
@@ -335,33 +330,13 @@ private fun external_display_url(url: String): String {
     }
 }
 
-private val IMG_WIDTH_PATTERN = Regex("""width\s*=\s*["']?(\d+)""", RegexOption.IGNORE_CASE)
-
-private val IMG_HEIGHT_PATTERN = Regex("""height\s*=\s*["']?(\d+)""", RegexOption.IGNORE_CASE)
-
-private fun count_external_content(html: String): ExternalContentCounts {
-    var images = 0
-    var trackers = 0
+internal fun count_external_content(html: String, report: EmailHtmlSanitizer.TrackerReport): ExternalContentCounts {
     val items = mutableListOf<ExternalContentItem>()
-    IMG_TAG_PATTERN.findAll(html).forEach { match ->
-        val tag = match.value
-        val width_match = IMG_WIDTH_PATTERN.find(tag)
-        val height_match = IMG_HEIGHT_PATTERN.find(tag)
-        val w = width_match?.groupValues?.get(1)?.toIntOrNull()
-        val h = height_match?.groupValues?.get(1)?.toIntOrNull()
-        val is_tracker = w != null && h != null && w <= 2 && h <= 2
-        if (is_tracker) trackers++ else images++
-        if (items.size < EXTERNAL_ITEM_LIST_CAP) {
-            val url = SRC_URL_PATTERN.find(tag)?.groupValues?.get(1)
-            if (!url.isNullOrBlank()) {
-                items.add(
-                    ExternalContentItem(
-                        if (is_tracker) ExternalContentType.tracker else ExternalContentType.image,
-                        url,
-                    ),
-                )
-            }
-        }
+    for (url in report.image_urls) {
+        if (items.size < EXTERNAL_ITEM_LIST_CAP) items.add(ExternalContentItem(ExternalContentType.image, url))
+    }
+    for (url in report.pixel_urls) {
+        if (items.size < EXTERNAL_ITEM_LIST_CAP) items.add(ExternalContentItem(ExternalContentType.tracker, url))
     }
     val fonts = FONT_FACE_PATTERN.findAll(html).count()
     val css = LINK_STYLESHEET_PATTERN.findAll(html).count()
@@ -380,7 +355,7 @@ private fun count_external_content(html: String): ExternalContentCounts {
             }
         }
     }
-    return ExternalContentCounts(images, trackers, fonts, css, items)
+    return ExternalContentCounts(report.image_count, report.pixel_count, fonts, css, items)
 }
 
 private val PROXY_CSS_URL_PATTERN = Regex(
@@ -752,6 +727,8 @@ fun MailDetailScreen(
     var show_snooze_sheet by remember { mutableStateOf(false) }
     var show_folder_sheet by remember { mutableStateOf(false) }
     var show_label_sheet by remember { mutableStateOf(false) }
+    var show_category_sheet by remember { mutableStateOf(false) }
+    val categories_enabled = settings_state.preferences?.inbox_categories_enabled ?: true
     var action_target_id by remember { mutableStateOf<String?>(null) }
 
     var show_encryption_dropdown by remember { mutableStateOf(false) }
@@ -1162,6 +1139,17 @@ fun MailDetailScreen(
                             show_topbar_menu = false
                             settings_vm.load_tags()
                             show_label_sheet = true
+                        }
+                        if (can_move_to_category(api_item, categories_enabled)) {
+                            detail_menu_action(
+                                icon = TablerIcons.LayoutGrid,
+                                text = stringResource(R.string.move_to_category),
+                                tint = colors.text_primary,
+                                test_tag = "move_to_category",
+                            ) {
+                                show_topbar_menu = false
+                                show_category_sheet = true
+                            }
                         }
                         detail_menu_action(
                             icon = TablerIcons.Printer,
@@ -2215,6 +2203,25 @@ fun MailDetailScreen(
         )
     }
 
+    val category_item = api_item
+    if (show_category_sheet && category_item != null) {
+        val plan_vm_categories: org.astermail.android.billing.PlanLimitsViewModel = hiltViewModel()
+        val plan_state_categories by plan_vm_categories.state.collectAsStateWithLifecycle()
+        val custom_categories = settings_state.preferences?.custom_categories.orEmpty()
+        val active_tabs = category_move_tabs(
+            settings_state.preferences?.enabled_categories,
+            custom_categories,
+            plan_state_categories.limits?.limits?.get("max_custom_categories")?.limit ?: -1,
+        )
+        move_to_category_sheet(
+            current_category = category_item.category,
+            active_tabs = active_tabs,
+            custom_categories = custom_categories,
+            on_pick = { picked -> mail_vm.move_to_category(category_item.id, picked) },
+            on_close = { show_category_sheet = false },
+        )
+    }
+
     if (show_label_sheet) {
         val settings_state by settings_vm.state.collectAsStateWithLifecycle()
         val applied_tags = thread_state.item?.takeIf { it.id == email_id }?.tag_tokens?.toSet()
@@ -2607,8 +2614,8 @@ internal fun expanded_message(
             )
         }
 
-        val external_counts = remember(msg.body_html) {
-            if (msg.body_html != null) count_external_content(msg.body_html) else ExternalContentCounts(0, 0, 0, 0)
+        val external_counts = remember(msg.body_html, tracker_report) {
+            if (msg.body_html != null) count_external_content(msg.body_html, tracker_report) else ExternalContentCounts(0, 0, 0, 0)
         }
 
         if (msg.send_status == "failed" || msg.send_status == "bounced") {
@@ -2647,6 +2654,7 @@ internal fun expanded_message(
                     counts = external_counts,
                     on_allow_once = on_load_external,
                     on_always_allow = if (offer_always_allow) on_always_allow_external else null,
+                    on_show_trackers = if (tracker_report.total > 0) ({ show_tracker_details = true }) else null,
                 )
             }
         }
@@ -2719,6 +2727,9 @@ internal fun expanded_message(
             var body_wait_expired by remember(msg.id, retry_in_progress) { mutableStateOf(false) }
             LaunchedEffect(msg.id, retry_in_progress) {
                 kotlinx.coroutines.delay(BODY_PENDING_TIMEOUT_MS)
+                if (org.astermail.android.api.network.low_network_state.extend_timeouts()) {
+                    kotlinx.coroutines.delay(SLOW_LINK_BODY_PENDING_TIMEOUT_MS - BODY_PENDING_TIMEOUT_MS)
+                }
                 body_wait_expired = true
             }
             if (body_wait_expired) {
@@ -3403,6 +3414,7 @@ internal fun compact_banner(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     on_icon_click: (() -> Unit)? = null,
+    label_suffix: (@Composable () -> Unit)? = null,
     actions: @Composable () -> Unit,
 ) {
     val colors = AsterMaterial.colors
@@ -3433,17 +3445,25 @@ internal fun compact_banner(
                 .size(15.dp),
         )
         Spacer(Modifier.width(8.dp))
-        Text(
-            text = label,
-            color = colors.text_secondary,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = if (expanded) 6 else 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .clickable { expanded = !expanded },
-        )
+        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            if (label.isNotEmpty() || label_suffix == null) {
+                Text(
+                    text = label,
+                    color = colors.text_secondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = if (expanded) 6 else 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f, fill = label_suffix == null)
+                        .clickable { expanded = !expanded },
+                )
+            }
+            if (label_suffix != null) {
+                if (label.isNotEmpty()) Spacer(Modifier.width(4.dp))
+                label_suffix()
+            }
+        }
         Spacer(Modifier.width(6.dp))
         actions()
     }
@@ -3547,7 +3567,7 @@ private fun tracker_details_section_label(text: String) {
 }
 
 @Composable
-private fun tracker_details_dialog(
+internal fun tracker_details_dialog(
     report: EmailHtmlSanitizer.TrackerReport,
     on_close: () -> Unit,
 ) {
@@ -3628,15 +3648,13 @@ internal fun external_content_banner(
     counts: ExternalContentCounts,
     on_allow_once: () -> Unit,
     on_always_allow: (() -> Unit)?,
+    on_show_trackers: (() -> Unit)? = null,
 ) {
+    val colors = AsterMaterial.colors
     val summary_parts = mutableListOf<String>()
     if (counts.image_count > 0) {
         val n = counts.image_count
         summary_parts.add(pluralStringResource(R.plurals.n_images, n, n))
-    }
-    if (counts.tracker_count > 0) {
-        val n = counts.tracker_count
-        summary_parts.add(pluralStringResource(R.plurals.n_trackers, n, n))
     }
     if (counts.font_count > 0) {
         val n = counts.font_count
@@ -3646,16 +3664,53 @@ internal fun external_content_banner(
         val n = counts.css_count
         summary_parts.add(pluralStringResource(R.plurals.n_stylesheets, n, n))
     }
-    val label = if (summary_parts.isNotEmpty()) summary_parts.joinToString(", ")
-        else stringResource(R.string.detail_external_images_blocked)
+    val label = when {
+        summary_parts.isNotEmpty() -> summary_parts.joinToString(", ")
+        counts.tracker_count > 0 -> ""
+        else -> stringResource(R.string.detail_external_images_blocked)
+    }
     var show_details by remember { mutableStateOf(false) }
     if (show_details) {
         blocked_content_details_dialog(counts = counts, on_close = { show_details = false })
     }
+    val open_details: (() -> Unit)? = if (counts.items.isNotEmpty()) ({ show_details = true }) else null
+    val open_trackers = on_show_trackers ?: open_details
+    val tracker_label = pluralStringResource(R.plurals.n_trackers, counts.tracker_count, counts.tracker_count)
     compact_banner(
         icon = TablerIcons.PhotoOff,
         label = label,
-        on_icon_click = if (counts.items.isNotEmpty()) ({ show_details = true }) else null,
+        on_icon_click = open_details,
+        label_suffix = if (counts.tracker_count > 0) ({
+            Row(
+                modifier = Modifier
+                    .clip(SquircleShape(6.dp))
+                    .then(
+                        if (open_trackers != null) {
+                            Modifier.clickable(role = Role.Button, onClick = open_trackers)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .testTag("banner_trackers")
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = TablerIcons.ShieldCheck,
+                    contentDescription = null,
+                    tint = colors.success,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = tracker_label,
+                    color = if (open_trackers != null) colors.accent_blue else colors.text_secondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                )
+            }
+        }) else null,
     ) {
         compact_banner_action(
             label = stringResource(R.string.detail_external_allow_once),
@@ -5653,6 +5708,7 @@ internal fun email_html_view(
         remove_tracking_pixels = tracking_protection_on && settings_state.preferences?.block_tracking_pixels != false,
         block_remote_fonts = settings_state.preferences?.block_remote_fonts != false,
         block_remote_css = settings_state.preferences?.block_remote_css != false,
+        mark_tracking_pixels = !allow_external,
     )
     val dyslexia_font = settings_state.preferences?.dyslexia_font == true
     val underline_links = settings_state.preferences?.underline_links == true
@@ -5949,7 +6005,11 @@ internal fun email_html_view(
     fun proxy_html(raw: String): String {
         val cid_normalized = resolve_inline_cids(raw, inline_images)
         if (!allow_external) {
-            val imgs_blocked = EmailHtmlSanitizer.replace_blocked_images(cid_normalized, blocked_image_labels)
+            val imgs_blocked = EmailHtmlSanitizer.replace_blocked_images(
+                cid_normalized,
+                blocked_image_labels,
+                mark_tracking_pixels = true,
+            )
             return EmailHtmlSanitizer.neutralize_blocked_backgrounds(imgs_blocked)
         }
         return proxy_external_urls(cid_normalized, proxy_base)
