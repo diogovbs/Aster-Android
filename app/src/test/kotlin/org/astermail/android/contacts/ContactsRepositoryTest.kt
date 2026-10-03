@@ -185,7 +185,7 @@ class ContactsRepositoryTest {
     }
 
     @Test
-    fun `fetch_contacts keeps earlier pages when a later page fails`() = runTest {
+    fun `fetch_contacts fails when a later page fails`() = runTest {
         val page1_items = listOf(fake_encrypted_contact_item("c_1"))
 
         coEvery { contacts_api.list_contacts(limit = 100, cursor = null) } returns
@@ -194,9 +194,8 @@ class ContactsRepositoryTest {
             RuntimeException("invalid cursor timestamp")
 
         val result = repo.fetch_contacts()
-        assertTrue(result.isSuccess)
-        assertEquals(1, result.getOrThrow().size)
-        assertEquals("c_1", result.getOrThrow()[0].id)
+        assertTrue(result.isFailure)
+        assertEquals("invalid cursor timestamp", result.exceptionOrNull()?.message)
     }
 
     @Test
