@@ -276,6 +276,7 @@ internal fun plain_text_fallback_document(raw: String, bg_hex: String, fg_hex: S
         "<div id=\"m\">" + plain_text_fallback_body(raw) + "</div></body></html>"
 
 private const val BODY_PENDING_TIMEOUT_MS = 12_000L
+private const val SLOW_LINK_BODY_PENDING_TIMEOUT_MS = 65_000L
 
 private val EXTERNAL_RESOURCE_PATTERN = Regex(
     """(?:src\s*=\s*["']https?://|background\s*=\s*["']https?://|url\s*\(\s*["']?https?://|@font-face)""",
@@ -2719,6 +2720,9 @@ internal fun expanded_message(
             var body_wait_expired by remember(msg.id, retry_in_progress) { mutableStateOf(false) }
             LaunchedEffect(msg.id, retry_in_progress) {
                 kotlinx.coroutines.delay(BODY_PENDING_TIMEOUT_MS)
+                if (org.astermail.android.api.network.low_network_state.extend_timeouts()) {
+                    kotlinx.coroutines.delay(SLOW_LINK_BODY_PENDING_TIMEOUT_MS - BODY_PENDING_TIMEOUT_MS)
+                }
                 body_wait_expired = true
             }
             if (body_wait_expired) {
@@ -6227,6 +6231,8 @@ internal fun email_html_view(
         engine.detect(text, translate_accepted)
     }
 
+    val latest_on_link_click by rememberUpdatedState(on_link_click)
+    val latest_on_image_click by rememberUpdatedState(on_image_click)
     val webview_client = remember {
         object : android.webkit.WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -6241,11 +6247,11 @@ internal fun email_html_view(
                         val decoded = try {
                             java.net.URLDecoder.decode(raw, "UTF-8")
                         } catch (_: Throwable) { "" }
-                        if (is_zoomable_image_src(decoded)) on_image_click(decoded)
+                        if (is_zoomable_image_src(decoded)) latest_on_image_click(decoded)
                         return true
                     }
                     "http", "https", "mailto", "tel", "sms", "aster" -> {
-                        on_link_click(url)
+                        latest_on_link_click(url)
                         return true
                     }
                     "about" -> return false
