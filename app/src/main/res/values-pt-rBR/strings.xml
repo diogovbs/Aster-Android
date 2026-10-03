@@ -220,6 +220,7 @@
     <string name="block_sender">Bloquear remetente</string>
     <string name="message_unavailable">Mensagem indisponível</string>
     <string name="message_replaced_or_deleted">Esta mensagem foi excluída ou substituída por uma cópia mais recente. Para encontrá-la, volte e pesquise novamente.</string>
+    <string name="message_unavailable_offline">Esta mensagem não está disponível offline. Ela será aberta quando você voltar a ficar online.</string>
     <string name="no_subject">(sem assunto)</string>
     <string name="open_external_link">Abrir link externo?</string>
     <string name="leaving_aster_warning">Você está prestes a sair do Aster e abrir este link no seu navegador:</string>
@@ -3370,4 +3371,5 @@
     <string name="domain_dkim_rotated_auto">Chave DKIM rotacionada. O Aster Mail atualizou o registro DNS para você.</string>
     <string name="domain_dkim_notice_title">Adicione isto como um novo registro DNS</string>
     <string name="domain_dkim_notice_body">Seus e-mails já são assinados com a nova chave. Para passar nas verificações DKIM, adicione este registro TXT no seu provedor de DNS.</string>
+    <string name="color_swatch_option">Cor %1$d de %2$d</string>
 </resources>

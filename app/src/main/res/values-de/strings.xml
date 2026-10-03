@@ -221,6 +221,7 @@
     <string name="block_sender">Absender blockieren</string>
     <string name="message_unavailable">Nachricht nicht verfügbar</string>
     <string name="message_replaced_or_deleted">Diese Nachricht wurde gelöscht oder durch eine neuere Kopie ersetzt. Um sie zu finden, gehe zurück und suche erneut.</string>
+    <string name="message_unavailable_offline">Diese Nachricht ist offline nicht verfügbar. Sie wird geöffnet, sobald du wieder online bist.</string>
     <string name="no_subject">(kein Betreff)</string>
     <string name="open_external_link">Externen Link öffnen?</string>
     <string name="leaving_aster_warning">Sie verlassen Aster und öffnen diesen Link in Ihrem Browser:</string>
@@ -3352,4 +3353,5 @@
     <string name="domain_dkim_rotated_auto">DKIM-Schlüssel rotiert. Aster Mail hat den DNS-Eintrag für dich aktualisiert.</string>
     <string name="domain_dkim_notice_title">Als neuen DNS-Eintrag hinzufügen</string>
     <string name="domain_dkim_notice_body">Deine E-Mails werden bereits mit dem neuen Schlüssel signiert. Damit DKIM-Prüfungen bestehen, füge diesen TXT-Eintrag bei deinem DNS-Anbieter hinzu.</string>
+    <string name="color_swatch_option">Farbe %1$d von %2$d</string>
 </resources>
