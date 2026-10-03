@@ -452,7 +452,7 @@ fun InboxScreen(
         )
     }
     val show_payment_failed_banner = payment_failed_due != null
-    LaunchedEffect(Unit) { billing_vm.load_onboarding_checklist() }
+    LaunchedEffect(Unit) { billing_vm.load_onboarding_checklist(force = false) }
     val onboarding = billing_state.onboarding
     val onboarding_prefs = remember {
         context_for_prefs.getSharedPreferences("aster_onboarding", android.content.Context.MODE_PRIVATE)
@@ -3949,6 +3949,14 @@ private fun swipeable_thread_row(
             user_prefs = user_prefs,
             cached_geometry = cached_geometry,
             refresh_engaged = refresh_engaged,
+            accessibility_actions = swipe_accessibility_actions(
+                start_action = swipe_start_action,
+                end_action = swipe_end_action,
+                start_label = swipe_start_label,
+                end_label = swipe_end_label,
+                on_swipe_start = on_swipe_start,
+                on_swipe_end = on_swipe_end,
+            ),
         )
     }
 }
