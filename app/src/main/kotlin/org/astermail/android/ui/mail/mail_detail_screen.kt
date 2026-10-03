@@ -6231,6 +6231,8 @@ internal fun email_html_view(
         engine.detect(text, translate_accepted)
     }
 
+    val latest_on_link_click by rememberUpdatedState(on_link_click)
+    val latest_on_image_click by rememberUpdatedState(on_image_click)
     val webview_client = remember {
         object : android.webkit.WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -6245,11 +6247,11 @@ internal fun email_html_view(
                         val decoded = try {
                             java.net.URLDecoder.decode(raw, "UTF-8")
                         } catch (_: Throwable) { "" }
-                        if (is_zoomable_image_src(decoded)) on_image_click(decoded)
+                        if (is_zoomable_image_src(decoded)) latest_on_image_click(decoded)
                         return true
                     }
                     "http", "https", "mailto", "tel", "sms", "aster" -> {
-                        on_link_click(url)
+                        latest_on_link_click(url)
                         return true
                     }
                     "about" -> return false
