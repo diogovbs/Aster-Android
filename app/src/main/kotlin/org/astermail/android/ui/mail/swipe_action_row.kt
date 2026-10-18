@@ -29,7 +29,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,7 +41,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,15 +57,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.astermail.android.design.AsterSpacing
+import org.astermail.android.mail.folder_keeps_archived
 
 const val swipe_claim_slop_multiplier = 1f
 const val swipe_dominance_ratio = 1.2f
@@ -104,6 +108,23 @@ fun is_removing_swipe_action(action: String): Boolean = action in setOf(
     "restore_trash", "unmark_spam", "delete_permanent",
 )
 
+fun archive_removes_row(folder: String): Boolean = !folder_keeps_archived(folder)
+
+fun swipe_action_removes_row(action: String, folder: String): Boolean =
+    is_removing_swipe_action(action) && (action != "archive" || archive_removes_row(folder))
+
+fun swipe_accessibility_actions(
+    start_action: String,
+    end_action: String,
+    start_label: String,
+    end_label: String,
+    on_swipe_start: () -> Unit,
+    on_swipe_end: () -> Unit,
+): List<CustomAccessibilityAction> = buildList {
+    if (start_action != "none") add(CustomAccessibilityAction(start_label) { on_swipe_start(); true })
+    if (end_action != "none") add(CustomAccessibilityAction(end_label) { on_swipe_end(); true })
+}
+
 fun swipe_tone(color: Color, colors: AsterSemanticColors): Color {
     val target = if (colors.is_dark) 0.30f else 0.46f
     val level = color.luminance()
@@ -136,11 +157,14 @@ fun swipe_action_row(
     haptic_enabled: Boolean = true,
     list_scrolling: () -> Boolean = { false },
     reset_token: Int = 0,
+    removes_row: (String) -> Boolean = ::is_removing_swipe_action,
     content: @Composable () -> Unit,
 ) {
     val haptics = org.astermail.android.design.remember_haptic()
     var is_dismissed by remember { mutableStateOf(false) }
     val offset_x = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    val current_removes_row by rememberUpdatedState(removes_row)
     val start_enabled = start_action != "none"
     val end_enabled = end_action != "none"
 
@@ -156,20 +180,23 @@ fun swipe_action_row(
                 if (!start_enabled && !end_enabled) return@pointerInput
                 val slop = viewConfiguration.touchSlop
                 val claim_distance = slop * swipe_claim_slop_multiplier
-                coroutineScope {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            if (is_dismissed || list_scrolling()) continue
-                            launch { offset_x.stop() }
-                            val limit = size.width.toFloat()
-                            val commit_distance = limit * swipe_commit_fraction
-                            var dx = 0f
-                            var dy = 0f
-                            var claimed = false
-                            var passed_commit = false
-                            val velocity_tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
-                            velocity_tracker.addPosition(down.uptimeMillis, down.position)
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (is_dismissed || list_scrolling()) continue
+                        val limit = size.width.toFloat()
+                        val commit_distance = limit * swipe_commit_fraction
+                        val lower = if (end_enabled) -limit else 0f
+                        val upper = if (start_enabled) limit else 0f
+                        var dx = 0f
+                        var dy = 0f
+                        var position = 0f
+                        var claimed = false
+                        var released = false
+                        var passed_commit = false
+                        val velocity_tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
+                        velocity_tracker.addPosition(down.uptimeMillis, down.position)
+                        try {
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -185,45 +212,46 @@ fun swipe_action_row(
                                     if (if (dx > 0f) !start_enabled else !end_enabled) break
                                     claimed = true
                                     change.consume()
-                                    launch { offset_x.snapTo(dx - sign(dx) * claim_distance) }
+                                    position = (offset_x.value + dx - sign(dx) * claim_distance).coerceIn(lower, upper)
                                 } else {
                                     change.consume()
-                                    val next = (offset_x.value + delta.x).coerceIn(
-                                        if (end_enabled) -limit else 0f,
-                                        if (start_enabled) limit else 0f,
-                                    )
-                                    launch { offset_x.snapTo(next) }
-                                    val past = abs(next) >= commit_distance
-                                    if (past != passed_commit) {
-                                        passed_commit = past
-                                        if (haptic_enabled) {
-                                            haptics(
-                                                if (past) {
-                                                    org.astermail.android.design.aster_haptic.gesture_threshold
-                                                } else {
-                                                    org.astermail.android.design.aster_haptic.tick
-                                                },
-                                            )
-                                        }
+                                    position = (position + delta.x).coerceIn(lower, upper)
+                                }
+                                val target = position
+                                scope.launch { offset_x.snapTo(target) }
+                                val past = abs(target) >= commit_distance
+                                if (past != passed_commit) {
+                                    passed_commit = past
+                                    if (haptic_enabled) {
+                                        haptics(
+                                            if (past) {
+                                                org.astermail.android.design.aster_haptic.gesture_threshold
+                                            } else {
+                                                org.astermail.android.design.aster_haptic.tick
+                                            },
+                                        )
                                     }
                                 }
                             }
-                            if (!claimed) continue
-                            val travelled = offset_x.value
-                            val velocity_x = velocity_tracker.calculateVelocity().x
-                            if (!swipe_commits(travelled, velocity_x, limit)) {
-                                launch { offset_x.animateTo(0f, tween(220)) }
-                                continue
-                            }
-                            val action = if (travelled > 0f) start_action else end_action
-                            if (is_removing_swipe_action(action)) {
-                                is_dismissed = true
-                                launch { offset_x.animateTo(sign(travelled) * limit, tween(180)) }
-                            } else {
-                                launch { offset_x.animateTo(0f, tween(220)) }
-                            }
-                            if (travelled > 0f) on_swipe_start() else on_swipe_end()
+                            released = true
+                        } finally {
+                            if (claimed && !released) scope.launch { offset_x.animateTo(0f, tween(220)) }
                         }
+                        if (!claimed) continue
+                        val travelled = position
+                        val velocity_x = velocity_tracker.calculateVelocity().x
+                        if (!swipe_commits(travelled, velocity_x, limit)) {
+                            scope.launch { offset_x.animateTo(0f, tween(220)) }
+                            continue
+                        }
+                        val action = if (travelled > 0f) start_action else end_action
+                        if (current_removes_row(action)) {
+                            is_dismissed = true
+                            scope.launch { offset_x.animateTo(sign(travelled) * limit, tween(180)) }
+                        } else {
+                            scope.launch { offset_x.animateTo(0f, tween(220)) }
+                        }
+                        if (travelled > 0f) on_swipe_start() else on_swipe_end()
                     }
                 }
             },
@@ -240,7 +268,7 @@ fun swipe_action_row(
                     .let { if (background_shape != null) it.clip(background_shape) else it }
                     .background(surface)
                     .padding(horizontal = AsterSpacing.xl),
-                contentAlignment = if (towards_start) Alignment.CenterStart else Alignment.CenterEnd,
+                contentAlignment = if (towards_start) AbsoluteAlignment.CenterLeft else AbsoluteAlignment.CenterRight,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
@@ -259,7 +287,7 @@ fun swipe_action_row(
                 }
             }
         }
-        Box(modifier = Modifier.offset { IntOffset(offset_x.value.roundToInt(), 0) }) {
+        Box(modifier = Modifier.absoluteOffset { IntOffset(offset_x.value.roundToInt(), 0) }) {
             content()
         }
     }

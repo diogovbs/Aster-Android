@@ -28,6 +28,7 @@ import org.astermail.android.api.server_supplied_detail
 
 const val FAMILY_2FA_REQUIRED_CODE = "FAMILY_2FA_REQUIRED"
 const val PENDING_LOGIN_EXPIRED_CODE = "PENDING_LOGIN_EXPIRED"
+const val USERNAME_IN_USE_CODE = "USERNAME_IN_USE"
 
 fun localized_server_code(context: Context, t: Throwable): String? {
     val forbidden = t as? ApiError.ForbiddenError ?: return null
@@ -53,6 +54,10 @@ private val validation_code_strings = mapOf(
     "FOLDER_PASSWORD_NOT_SET" to R.string.error_folder_password_not_set,
     "IMAGE_TOO_LARGE" to R.string.error_image_too_large,
     "PAYLOAD_TOO_LARGE" to R.string.error_upload_too_large,
+    "TAG_PARENT_NOT_FOUND" to R.string.error_tag_parent_not_found,
+    "TAG_PARENT_SELF" to R.string.error_tag_parent_self,
+    "TAG_PARENT_CYCLE" to R.string.error_tag_parent_cycle,
+    "TAG_PARENT_TOO_DEEP" to R.string.error_tag_parent_too_deep,
 )
 
 private fun send_refusal_message(
@@ -99,8 +104,13 @@ fun server_code_string_res(code: String): Int? = when (code) {
     "VERIFICATION_REQUIRED" -> R.string.error_verification_required
     "CLIENT_UPGRADE_REQUIRED" -> R.string.error_client_upgrade_required
     "ALIAS_REENCRYPTION_INCOMPLETE" -> R.string.error_alias_reencryption_incomplete
+    "SENDER_NOT_AUTHORIZED" -> R.string.error_sender_address_refused
+    USERNAME_IN_USE_CODE -> R.string.error_username_taken
     else -> null
 }
+
+fun is_username_taken(t: Throwable): Boolean =
+    t is ApiError.Conflict && t.code == USERNAME_IN_USE_CODE
 
 private fun localized_server_code_string(context: Context, code: String): String? =
     server_code_string_res(code)?.let { context.getString(it) }

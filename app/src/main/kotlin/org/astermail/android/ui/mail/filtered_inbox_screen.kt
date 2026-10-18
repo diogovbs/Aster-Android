@@ -87,11 +87,7 @@ fun FilteredInboxScreen(
 ) {
     val colors = AsterMaterial.colors
     val list_state = org.astermail.android.ui.common.remember_session_lazy_list_state()
-    val foreground_epoch by org.astermail.android.ui.common.app_session.foreground_epoch
-        .collectAsStateWithLifecycle()
-    LaunchedEffect(foreground_epoch) {
-        if (foreground_epoch > 0) list_state.scrollToItem(0)
-    }
+    org.astermail.android.ui.common.on_return_to_foreground { list_state.scrollToItem(0) }
     val inbox_state by mail_vm.inbox_state.collectAsStateWithLifecycle()
     val settings_vm = org.astermail.android.settings.shared_settings_view_model()
     val settings_state by settings_vm.state.collectAsStateWithLifecycle()
@@ -102,6 +98,7 @@ fun FilteredInboxScreen(
         FilterType.alias -> "routing:$filter_value"
     }
     LaunchedEffect(requested_folder) {
+        mail_vm.drop_read_filter()
         mail_vm.load_inbox(requested_folder, force = true)
         if (filter_type == FilterType.folder && filter_value in stats_backed_folders) {
             mail_vm.load_stats(force = false)
@@ -284,7 +281,7 @@ fun FilteredInboxScreen(
                             }
                         }
                     }
-                    org.astermail.android.ui.common.fast_scroll_bar(
+                    org.astermail.android.ui.common.vertical_scroll_bar(
                         state = list_state,
                         modifier = Modifier.align(Alignment.TopEnd),
                     )

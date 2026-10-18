@@ -96,6 +96,10 @@ class PersistentPushService : Service() {
 
     @Volatile
     private var authenticated = false
+        set(value) {
+            field = value
+            socket_live = value
+        }
 
     @Volatile
     private var had_connected = false
@@ -140,6 +144,7 @@ class PersistentPushService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val in_foreground = runCatching { enter_foreground() }.isSuccess
         if (intent?.action == ACTION_STOP) {
             set_enabled(this, false)
             stop_cleanly()
@@ -149,11 +154,11 @@ class PersistentPushService : Service() {
             stop_cleanly()
             return START_NOT_STICKY
         }
-        if (runCatching { enter_foreground() }.isFailure) {
+        if (!in_foreground) {
             stop_cleanly()
             return START_NOT_STICKY
         }
-        connect()
+        if (!authenticated) connect()
         return START_STICKY
     }
 
@@ -261,7 +266,11 @@ class PersistentPushService : Service() {
                 return@launch
             }
             if (!has_network()) {
-                schedule_reconnect()
+                val wait_for_network = org.astermail.android.api.network.should_wait_for_network(
+                    has_network = false,
+                    network_callback_registered = network_callback != null,
+                )
+                if (!wait_for_network) schedule_reconnect()
                 return@launch
             }
             open_socket(token)
@@ -343,6 +352,34 @@ class PersistentPushService : Service() {
         }
     }
 
+    private fun deliver_reaction(text: String) {
+        val frame = org.astermail.android.mail.parse_reaction_frame(text)
+        if (frame == null || frame.event == null) {
+            deliver_new_mail()
+            return
+        }
+        if (!frame.is_added) {
+            runCatching { handle_reaction_changed(this, frame) }
+            return
+        }
+        val power = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val lock = runCatching {
+            power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)?.apply {
+                setReferenceCounted(false)
+                acquire(WAKE_LOCK_TIMEOUT_MS)
+            }
+        }.getOrNull()
+        try {
+            val result = runCatching { handle_reaction_added(this, frame) }
+                .getOrDefault(PushResult.NeedsFetch)
+            if (result == PushResult.NeedsFetch) {
+                runCatching { MailPollingWorker.enqueue_forced_notify(this) }
+            }
+        } finally {
+            runCatching { if (lock?.isHeld == true) lock.release() }
+        }
+    }
+
     private inner class AsterSocketListener(
         private val marker: Long,
         private val token: String,
@@ -372,9 +409,7 @@ class PersistentPushService : Service() {
                     reconnect_attempt = 0
                     start_heartbeat(marker)
                     if (had_connected) {
-                        runCatching {
-                            MailPollingWorker.enqueue_forced_notify(this@PersistentPushService)
-                        }
+                        runCatching { MailPollingWorker.enqueue(this@PersistentPushService) }
                     }
                     had_connected = true
                 }
@@ -385,7 +420,8 @@ class PersistentPushService : Service() {
                 }
                 "session_revoked" -> stop_cleanly()
                 "ping" -> runCatching { webSocket.send(PONG_FRAME) }
-                "new_mail", "new_reaction" -> deliver_new_mail()
+                "new_mail" -> deliver_new_mail()
+                "new_reaction" -> deliver_reaction(text)
                 "contacts_changed" -> runCatching {
                     org.astermail.android.contacts.sync.ContactSyncAccounts.notify_remote_updated()
                     org.astermail.android.contacts.sync.ContactSyncAccounts
@@ -456,6 +492,10 @@ class PersistentPushService : Service() {
         private const val WAKE_PAYLOAD = "{\"type\":\"wake\"}"
         private const val PING_FRAME = "{\"type\":\"ping\"}"
         private const val PONG_FRAME = "{\"type\":\"pong\"}"
+
+        @Volatile
+        var socket_live = false
+            private set
 
         fun websocket_url(): String = websocket_url_for(BuildConfig.API_BASE_URL)
 

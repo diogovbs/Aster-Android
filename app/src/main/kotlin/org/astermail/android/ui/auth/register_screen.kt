@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -53,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import org.astermail.android.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.drop
 import org.astermail.android.auth.AuthUiState
 import org.astermail.android.auth.AuthViewModel
 import org.astermail.android.design.AsterMaterial
@@ -76,8 +78,6 @@ fun RegisterScreen(
     val recovery_codes by view_model.recovery_codes.collectAsStateWithLifecycle()
     val recovery_backup_failed by view_model.recovery_backup_failed.collectAsStateWithLifecycle()
     val is_retrying_recovery_backup by view_model.is_retrying_recovery_backup.collectAsStateWithLifecycle()
-    val recovery_email_error by view_model.recovery_email_error.collectAsStateWithLifecycle()
-    val is_saving_recovery_email by view_model.is_saving_recovery_email.collectAsStateWithLifecycle()
 
     LaunchedEffect(recovery_codes) {
         if (recovery_codes != null && state.step.value == RegisterStep.generating) {
@@ -87,15 +87,26 @@ fun RegisterScreen(
     }
 
     LaunchedEffect(auth_state) {
-        if (auth_state is AuthUiState.Error && state.step.value == RegisterStep.generating) {
+        val failure = auth_state as? AuthUiState.Error
+        if (failure != null && state.step.value == RegisterStep.generating) {
             state.captcha_token.value = null
-            state.step.value = RegisterStep.password
+            state.step.value = if (failure.username_taken) RegisterStep.email else RegisterStep.password
         }
     }
 
     LaunchedEffect(Unit) {
+        snapshotFlow { state.username.value to state.email_domain.value }
+            .drop(1)
+            .collect {
+                if ((view_model.ui_state.value as? AuthUiState.Error)?.username_taken == true) {
+                    view_model.reset_state()
+                }
+            }
+    }
+
+    LaunchedEffect(Unit) {
         if (state.step.value == RegisterStep.recovery_key && recovery_codes == null) {
-            state.step.value = RegisterStep.recovery_email
+            state.step.value = RegisterStep.plan
         }
         val orphaned_generating = state.step.value == RegisterStep.generating &&
             auth_state !is AuthUiState.Loading &&
@@ -109,6 +120,7 @@ fun RegisterScreen(
 
     val is_loading = auth_state is AuthUiState.Loading
     val error_message = (auth_state as? AuthUiState.Error)?.message
+    val username_error_message = (auth_state as? AuthUiState.Error)?.takeIf { it.username_taken }?.message
     val previous_step = previous_register_step(state.step.value)
     val can_go_back = state.step.value == RegisterStep.email || previous_step != null
 
@@ -144,7 +156,7 @@ fun RegisterScreen(
                 when (state.step.value) {
                     RegisterStep.email -> RegisterUsernameStep(
                         state = state,
-                        error_message = null,
+                        error_message = username_error_message,
                         on_next = {
                             view_model.reset_state()
                             state.step.value = RegisterStep.password
@@ -180,49 +192,11 @@ fun RegisterScreen(
                         on_retry_backup = { view_model.retry_recovery_backup() },
                         on_continue = {
                             view_model.consume_recovery_codes()
-                            state.step.value = RegisterStep.recovery_email
+                            state.step.value = RegisterStep.plan
                         },
                     )
-                    RegisterStep.recovery_email -> RegisterRecoveryEmailStep(
-                        state = state,
-                        error_message = recovery_email_error,
-                        is_saving = is_saving_recovery_email,
-                        on_continue = {
-                            val recovery_email = state.recovery_email.value.trim()
-                            if (recovery_email == state.saved_recovery_email.value) {
-                                view_model.clear_recovery_email_error()
-                                state.step.value = RegisterStep.notifications
-                            } else {
-                                view_model.save_recovery_email(recovery_email) {
-                                    state.saved_recovery_email.value = recovery_email
-                                    state.step.value = RegisterStep.notifications
-                                }
-                            }
-                        },
-                        on_skip = {
-                            view_model.clear_recovery_email_error()
-                            state.step.value = RegisterStep.notifications
-                        },
-                    )
-                    RegisterStep.notifications -> RegisterNotificationsStep(
-                        on_done = { state.step.value = RegisterStep.addresses },
-                    )
-                    RegisterStep.addresses -> RegisterAddressesStep(
-                        state = state,
-                        on_done = { state.step.value = RegisterStep.custom_domain },
-                    )
-                    RegisterStep.custom_domain -> RegisterCustomDomainStep(
-                        on_own_domain = { on_registered("domains") },
-                        on_new_domain = if (org.astermail.android.billing.remember_play_install()) {
-                            null
-                        } else {
-                            { on_registered("buy_domain") }
-                        },
-                        on_skip = { state.step.value = RegisterStep.import_mail },
-                    )
-                    RegisterStep.import_mail -> RegisterImportMailStep(
-                        on_import = { on_registered("import") },
-                        on_skip = { on_registered(null) },
+                    RegisterStep.plan -> RegisterPlanStep(
+                        on_continue = { on_registered(null) },
                     )
                 }
             }
