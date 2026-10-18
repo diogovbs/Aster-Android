@@ -227,10 +227,14 @@ class SearchIndexManager @Inject constructor(
         }
     }
 
+    private val poison_purge_pending = java.util.concurrent.atomic.AtomicBoolean(true)
+
     private suspend fun purge_bundle_poisoned() {
-        runCatching { dao.clear_armored_previews() }
-        runCatching { dao.delete_bundle_poisoned() }
-        runCatching { dao.delete_blank_rows() }
+        if (!poison_purge_pending.getAndSet(false)) return
+        val purged = runCatching { dao.clear_armored_previews() }.isSuccess and
+            runCatching { dao.delete_bundle_poisoned() }.isSuccess and
+            runCatching { dao.delete_blank_rows() }.isSuccess
+        if (!purged) poison_purge_pending.set(true)
     }
 
     suspend fun reconcile_inbox_window(
@@ -298,6 +302,10 @@ class SearchIndexManager @Inject constructor(
 
     fun mark_inbox_synced() {
         runCatching { pause_prefs.edit().putLong(KEY_LAST_INBOX_SYNC, System.currentTimeMillis()).apply() }
+    }
+
+    fun expire_inbox_sync() {
+        runCatching { pause_prefs.edit().remove(KEY_LAST_INBOX_SYNC).apply() }
     }
 
     private fun record_window_absences(ids: List<String>): List<String> {
@@ -623,11 +631,20 @@ class SearchIndexManager @Inject constructor(
                 has_recipient_key = item.raw_item.has_recipient_key,
                 is_pinned = item.raw_item.metadata?.is_pinned ?: false,
                 tag_tokens = item.tag_tokens.joinToString(",").ifBlank { null },
+                spf_result = item.raw_item.spf_result,
+                dkim_result = item.raw_item.dkim_result,
+                dmarc_result = item.raw_item.dmarc_result,
+                sender_aligned = item.raw_item.sender_aligned,
+                sender_verified = item.raw_item.sender_verified,
+                sender_verified_domain = item.raw_item.sender_verified_domain,
+                sender_verification = item.sender_verification,
+                item_type = item.raw_item.item_type,
             )
         }
         mutex.withLock {
             if (epoch.get() != my_epoch) return emptySet()
             dao.insert_all(entities)
+            poison_purge_pending.set(true)
         }
         return indexable.map { it.id }.toSet()
     }

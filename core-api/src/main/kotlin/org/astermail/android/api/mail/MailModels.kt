@@ -103,12 +103,14 @@ data class MailItem(
     val spf_result: String? = null,
     val dkim_result: String? = null,
     val dmarc_result: String? = null,
+    val sender_aligned: Boolean? = null,
     val sender_verified: Boolean? = null,
     val sender_verified_domain: String? = null,
     val rule_category: String? = null,
     val is_reaction: Boolean? = null,
     val message_group_id: String? = null,
     val reactions: List<ReactionSummary>? = null,
+    val has_unseen_reaction: Boolean? = null,
 )
 
 @Serializable
@@ -119,6 +121,7 @@ data class ReactionSummary(
     val reactor_email: String? = null,
     val is_own: Boolean = false,
     val created_at: String? = null,
+    val is_unseen: Boolean = false,
 )
 
 @Serializable
@@ -239,6 +242,7 @@ data class ThreadMessageItem(
     val spf_result: String? = null,
     val dkim_result: String? = null,
     val dmarc_result: String? = null,
+    val sender_aligned: Boolean? = null,
     val sender_verified: Boolean? = null,
     val sender_verified_domain: String? = null,
     val spam_score: Float? = null,

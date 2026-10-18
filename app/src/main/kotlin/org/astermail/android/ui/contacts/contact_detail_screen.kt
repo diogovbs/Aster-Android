@@ -21,6 +21,7 @@
 
 package org.astermail.android.ui.contacts
 
+import org.astermail.android.ui.common.vertical_scroll_with_indicator
 import androidx.compose.ui.text.style.TextOverflow
 import compose.icons.TablerIcons
 import compose.icons.tablericons.*
@@ -64,7 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.Icon
 import org.astermail.android.design.acrylic
-import org.astermail.android.design.aster_ripple
+import androidx.compose.material3.ripple
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -105,6 +106,7 @@ import org.astermail.android.design.components.aster_menu_item
 import org.astermail.android.ui.search.build_contact_mail_query
 import androidx.compose.material.icons.filled.Star
 import org.astermail.android.ui.common.page_surface
+import org.astermail.android.ui.common.show_copy_failed_toast
 
 @Composable
 fun ContactDetailScreen(
@@ -126,8 +128,14 @@ fun ContactDetailScreen(
     val copied_value_message = stringResource(R.string.copied)
     val copy_value: (String) -> Unit = { value ->
         clipboard_scope.launch {
-            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("", value)))
-            Toast.makeText(context, copied_value_message, Toast.LENGTH_SHORT).show()
+            val copied = runCatching {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("", value)))
+            }.isSuccess
+            if (copied) {
+                Toast.makeText(context, copied_value_message, Toast.LENGTH_SHORT).show()
+            } else {
+                show_copy_failed_toast(context)
+            }
         }
     }
 
@@ -269,7 +277,7 @@ fun ContactDetailScreen(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState())
+                .vertical_scroll_with_indicator()
                 .padding(bottom = AsterSpacing.xxl),
         ) {
             Column(
@@ -373,10 +381,16 @@ fun ContactDetailScreen(
                         modifier = Modifier.weight(1f),
                     ) {
                         clipboard_scope.launch {
-                            clipboard.setClipEntry(
-                                ClipEntry(ClipData.newPlainText("", primary_email)),
-                            )
-                            Toast.makeText(context, copied_message, Toast.LENGTH_SHORT).show()
+                            val copied = runCatching {
+                                clipboard.setClipEntry(
+                                    ClipEntry(ClipData.newPlainText("", primary_email)),
+                                )
+                            }.isSuccess
+                            if (copied) {
+                                Toast.makeText(context, copied_message, Toast.LENGTH_SHORT).show()
+                            } else {
+                                show_copy_failed_toast(context)
+                            }
                         }
                     }
                 }
@@ -575,7 +589,7 @@ private fun QuickAction(
                 .background(container)
                 .clickable(
                     interactionSource = interaction_source,
-                    indication = aster_ripple(color = colors.accent_blue, bounded = false),
+                    indication = ripple(color = colors.accent_blue, bounded = false),
                     onClick = on_click,
                 ),
             contentAlignment = Alignment.Center,

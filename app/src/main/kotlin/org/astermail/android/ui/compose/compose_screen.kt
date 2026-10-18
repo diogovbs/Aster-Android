@@ -21,6 +21,7 @@
 
 package org.astermail.android.ui.compose
 
+import org.astermail.android.ui.common.vertical_scroll_with_indicator
 import androidx.compose.ui.graphics.RectangleShape
 import compose.icons.TablerIcons
 import kotlinx.coroutines.CancellationException
@@ -56,6 +57,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.content.consume
@@ -158,6 +160,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.res.pluralStringResource
@@ -340,6 +343,7 @@ fun ComposeScreen(
         settings_vm.load_default_sender()
         settings_vm.load_aliases()
         settings_vm.load_custom_domain_addresses()
+        settings_vm.load_domains(prefetch_dns = false)
         settings_vm.load_ghost_aliases()
         settings_vm.load_preferences()
         settings_vm.load_signature()
@@ -378,7 +382,7 @@ fun ComposeScreen(
     val external_sender_tokens = remember(external_accounts_state) {
         org.astermail.android.imports.external_sender_map(external_accounts_state)
     }
-    val alias_options = remember(user_email, settings_state.aliases, settings_state.custom_domain_addresses, settings_state.ghost_aliases, thread_ghost_match, external_sender_tokens) {
+    val base_alias_options = remember(user_email, settings_state.aliases, settings_state.custom_domain_addresses, settings_state.ghost_aliases, thread_ghost_match, external_sender_tokens) {
         val options = mutableListOf<String>()
         if (user_email.isNotBlank()) options.add(user_email)
         settings_state.aliases
@@ -411,6 +415,36 @@ fun ComposeScreen(
             }
         }
         options.toList()
+    }
+    val catch_all_unlocked = is_catch_all_unlocked(plan_state.limits)
+    val alias_options = remember(
+        base_alias_options,
+        catch_all_unlocked,
+        settings_state.domains,
+        settings_state.aliases,
+        settings_state.custom_domain_addresses,
+        settings_state.ghost_aliases,
+        thread_state.messages,
+        thread_state.item,
+        reply_to,
+        mode,
+    ) {
+        val target = if (is_thread_compose(reply_to, mode)) {
+            thread_snapshot_from(thread_state).messages.firstOrNull { it.id == reply_to }
+        } else {
+            null
+        }
+        val disabled = settings_state.aliases.filterNot { it.is_enabled }.map { it.address } +
+            settings_state.custom_domain_addresses.filterNot { it.is_enabled }.map { it.address } +
+            settings_state.ghost_aliases.filterNot { it.is_enabled }.map { it.address }
+        base_alias_options + catch_all_sender_options(
+            unlocked = catch_all_unlocked,
+            domains = settings_state.domains,
+            candidates = catch_all_reply_candidates(target, base_alias_options) +
+                catch_all_draft_candidates(mode, thread_state.messages.firstOrNull()?.sender_email),
+            existing = base_alias_options,
+            disabled = disabled,
+        )
     }
 
     val alias_hash_map = remember(
@@ -516,7 +550,7 @@ fun ComposeScreen(
     val live_identity = remember(
         user_email,
         settings_state.user,
-        alias_options,
+        base_alias_options,
         primary_sender_email,
         alias_display_name_map,
         settings_state.ghost_aliases,
@@ -526,7 +560,7 @@ fun ComposeScreen(
         compose_identity_snapshot(
             user_email = user_email,
             display_name = settings_state.user?.display_name.orEmpty(),
-            alias_options = alias_options,
+            alias_options = base_alias_options,
             primary_sender_email = primary_sender_email,
             alias_display_names = alias_display_name_map,
             ghost_addresses = settings_state.ghost_aliases.map { it.address },
@@ -598,6 +632,7 @@ fun ComposeScreen(
     var from_alias by rememberSaveable { mutableStateOf(initial_from.address) }
     var from_alias_tier by rememberSaveable { mutableStateOf(initial_from.tier) }
     var from_manually_selected by rememberSaveable { mutableStateOf(false) }
+    var pending_draft_from by rememberSaveable { mutableStateOf("") }
 
     LaunchedEffect(alias_options, received_on_alias, thread_ghost_match, primary_sender_email) {
         val next = next_from_alias(
@@ -800,7 +835,7 @@ fun ComposeScreen(
             signature_separator_enabled,
         )
     }
-    var signature_html by rememberSaveable {
+    var signature_html by rememberSaveable(saver = bounded_text_saver) {
         mutableStateOf(
             html_signature_with_separator(
                 preloaded_signature_obj?.takeIf { it.is_html }?.content.orEmpty(),
@@ -810,7 +845,7 @@ fun ComposeScreen(
     }
     var active_signature_placement by remember { mutableStateOf(preloaded_signature_obj?.placement) }
     var active_signature_id by remember { mutableStateOf(preloaded_signature_obj?.id) }
-    var body by rememberSaveable {
+    var body by rememberSaveable(saver = bounded_text_saver) {
         mutableStateOf(
             when {
                 prefill.body.isNotBlank() -> prefill.body
@@ -843,7 +878,7 @@ fun ComposeScreen(
     }
     var initial_to_chips by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     var initial_subject by rememberSaveable { mutableStateOf("") }
-    var initial_body by rememberSaveable { mutableStateOf(if (prefill.body.isNotBlank()) "" else body) }
+    var initial_body by rememberSaveable(saver = bounded_text_saver) { mutableStateOf(if (prefill.body.isNotBlank()) "" else body) }
     var initial_cc_chips by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     var initial_bcc_chips by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     val signature_loaded by settings_vm.signature_loaded.collectAsStateWithLifecycle()
@@ -966,7 +1001,7 @@ fun ComposeScreen(
             } else {
                 val item = thread_state.item
                 val original_html = msg.body_html?.takeIf { it.isNotBlank() }
-                    ?: msg.body_text.replace("\n", "<br>")
+                    ?: org.astermail.android.mail.build_plain_text_html(msg.body_text)
                 original_html to Triple(
                     msg.display_sender_email ?: msg.sender_email,
                     msg.timestamp,
@@ -977,7 +1012,50 @@ fun ComposeScreen(
     }
     val quoted_html = quoted_source?.first?.takeIf { it.isNotBlank() }
     val quoted_meta = quoted_source?.second
-    var quoted_expanded by remember { mutableStateOf(false) }
+    val quoted_to = remember(reply_to, thread_state) {
+        (thread_state.messages.firstOrNull { it.id == reply_to } ?: thread_state.messages.lastOrNull())
+            ?.to_addresses.orEmpty()
+    }
+    val is_forward_quote = effective_mode == "forward" && quoted_html != null
+    var quoted_expanded by remember(is_forward_quote) { mutableStateOf(is_forward_quote) }
+    var forward_edited_html by remember(effective_mode, quoted_html) { mutableStateOf<String?>(null) }
+    val forward_labels = forward_header_labels(
+        forwarded_message = stringResource(R.string.compose_quote_forwarded_message),
+        from = stringResource(R.string.compose_quote_header_from),
+        date = stringResource(R.string.compose_quote_header_date),
+        subject = stringResource(R.string.compose_quote_header_subject),
+        to = stringResource(R.string.compose_quote_header_to),
+    )
+    val forward_seed_html = remember(is_forward_quote, quoted_html, quoted_meta, quoted_to, forward_labels) {
+        if (!is_forward_quote || quoted_html == null) {
+            null
+        } else {
+            val (forward_from, forward_ts, forward_subject) = quoted_meta ?: Triple("", "", "")
+            build_forward_inner_html(
+                build_forward_header_html(
+                    forward_labels,
+                    forward_header_values(
+                        from = forward_from,
+                        date = format_quote_timestamp(forward_ts),
+                        subject = forward_subject,
+                        to = quoted_to,
+                    ),
+                ),
+                quoted_html,
+            )
+        }
+    }
+
+    fun forward_block_for_send(): String? {
+        val seed = forward_seed_html ?: return null
+        return wrap_forward_block(forward_edited_html ?: seed)
+    }
+
+    fun draft_body_for_save(): String {
+        val forward_block = forward_block_for_send() ?: return draft_body_with_signature()
+        val base_is_html = get_body_with_formatting() != body || signature_html.isNotBlank()
+        return draft_html_with_forward(draft_body_with_signature(), base_is_html, forward_block)
+    }
     var is_sending by remember { mutableStateOf(false) }
     var sent by remember { mutableStateOf(false) }
     var discarded by remember { mutableStateOf(false) }
@@ -1005,6 +1083,9 @@ fun ComposeScreen(
         .compose_font_color_argb(
             org.astermail.android.api.preferences.effective_compose_font_color(settings_state.preferences),
         )
+    val compose_display_color_argb = compose_default_color_argb?.let {
+        compose_display_text_color(it, colors.bg_primary.toArgb(), colors.text_primary.toArgb())
+    }
     val apply_compose_defaults: (android.text.Editable) -> Unit = apply_defaults@{ editable ->
         editable.getSpans(0, editable.length, android.text.style.AbsoluteSizeSpan::class.java)
             .forEach { editable.removeSpan(it) }
@@ -1020,7 +1101,7 @@ fun ComposeScreen(
         }
         compose_default_color_argb?.let {
             editable.setSpan(
-                android.text.style.ForegroundColorSpan(it),
+                compose_default_color_span(it, compose_display_color_argb ?: it),
                 0,
                 editable.length,
                 android.text.Spanned.SPAN_INCLUSIVE_INCLUSIVE,
@@ -1028,7 +1109,7 @@ fun ComposeScreen(
         }
     }
 
-    LaunchedEffect(compose_default_size_px, compose_default_color_argb, body_editor_ref.value) {
+    LaunchedEffect(compose_default_size_px, compose_default_color_argb, compose_display_color_argb, body_editor_ref.value) {
         val editable = body_editor_ref.value?.text ?: return@LaunchedEffect
         apply_compose_defaults(editable)
     }
@@ -1155,14 +1236,28 @@ fun ComposeScreen(
                     initial_attachments = attachments
                     observed_attachments = attachments
                 }
-                val draft_from = msg.sender_email
-                if (draft_from.isNotBlank() && draft_from in alias_options) {
+                val draft_from = find_sender_option(alias_options, msg.sender_email)
+                if (draft_from != null) {
                     from_alias = draft_from
                     from_manually_selected = true
+                } else {
+                    pending_draft_from = msg.sender_email.trim()
                 }
                 draft_loaded = true
             }
         }
+    }
+
+    LaunchedEffect(alias_options, pending_draft_from) {
+        if (pending_draft_from.isBlank()) return@LaunchedEffect
+        if (from_manually_selected) {
+            pending_draft_from = ""
+            return@LaunchedEffect
+        }
+        val draft_from = find_sender_option(alias_options, pending_draft_from) ?: return@LaunchedEffect
+        from_alias = draft_from
+        from_manually_selected = true
+        pending_draft_from = ""
     }
 
     LaunchedEffect(prefill) {
@@ -1334,7 +1429,7 @@ fun ComposeScreen(
             if (sent || is_sending || discarded) return@launch
             val result = mail_vm.save_draft(
                 subject = subject,
-                body_html = draft_body_with_signature(),
+                body_html = draft_body_for_save(),
                 sender_email = from_alias,
                 to = to_chips,
                 cc = cc_chips,
@@ -1350,7 +1445,7 @@ fun ComposeScreen(
             if (result.isSuccess) {
                 current_draft_id = result.getOrNull().orEmpty()
                 draft_status = context.getString(R.string.saved)
-            } else {
+            } else if (isActive) {
                 draft_status = context.getString(R.string.save_failed)
             }
         }
@@ -1477,14 +1572,7 @@ fun ComposeScreen(
     fun apply_link(url: String) {
         val et = body_editor_ref.value ?: return
         val editable = et.text ?: return
-        val normalized = url.trim().let {
-            when {
-                it.startsWith("http://", true) || it.startsWith("https://", true) || it.startsWith("mailto:", true) -> it
-                it.contains('@') && !it.contains(' ') -> "mailto:$it"
-                else -> "https://$it"
-            }
-        }
-        if (normalized.length < 8 || normalized.contains(' ')) return
+        val normalized = normalize_link_url(url) ?: return
         val s = minOf(et.selectionStart, et.selectionEnd).coerceAtLeast(0)
         val e = maxOf(et.selectionStart, et.selectionEnd).coerceAtMost(editable.length)
         if (s >= e) {
@@ -1530,7 +1618,7 @@ fun ComposeScreen(
                     val pause_attachments = attachments
                     mail_vm.save_draft_and_finish(
                         subject = subject,
-                        body_html = draft_body_with_signature(),
+                        body_html = draft_body_for_save(),
                         sender_email = from_alias,
                         to = to_chips,
                         cc = cc_chips,
@@ -1668,7 +1756,7 @@ fun ComposeScreen(
             )
         }
 
-        val quote_block = quoted_html?.let { qh ->
+        val quote_block = forward_block_for_send() ?: quoted_html?.let { qh ->
             val (from_addr, ts, subj) = quoted_meta ?: Triple("", "", "")
             "<br><br><div class=\"aster_quote gmail_quote\">" +
                 "<div class=\"aster_quote_attr gmail_attr\" style=\"color:#555;font-size:13px\">" +
@@ -1845,8 +1933,8 @@ fun ComposeScreen(
         if (send_blocker != null) {
             send_lock.set(false)
             when (send_blocker) {
-                SendBlocker.MIXED_RECIPIENTS ->
-                    send_error = context.getString(R.string.cannot_mix_recipients)
+                SendBlocker.MIXED_RECIPIENTS_PASSWORD ->
+                    send_error = context.getString(R.string.password_needs_outside_recipients_only)
                 SendBlocker.EXPIRATION_LOCKED, SendBlocker.EXPIRY_PASSWORD_LOCKED ->
                     org.astermail.android.ui.upgrade.UpgradeStore.show_plan_limit(null, null)
                 SendBlocker.EXPIRY_PASSWORD_INTERNAL -> {
@@ -1874,7 +1962,6 @@ fun ComposeScreen(
                 send_error = context.getString(
                     when (scheduled_block) {
                         org.astermail.android.mail.ScheduledSendBlock.TOO_FAR_AHEAD -> R.string.scheduled_too_far_ahead
-                        org.astermail.android.mail.ScheduledSendBlock.MIXED_RECIPIENTS -> R.string.cannot_mix_recipients
                         org.astermail.android.mail.ScheduledSendBlock.REQUIRES_ENCRYPTION -> R.string.scheduled_requires_encryption
                     },
                 )
@@ -2257,7 +2344,7 @@ fun ComposeScreen(
                         )
                     }
                 } else {
-                    send_fab(enabled = can_send, on_click = { do_send() })
+                    send_fab(active = can_send, enabled = !is_sending, on_click = { do_send() })
                 }
             }
             Spacer(Modifier.width(AsterSpacing.sm))
@@ -2268,7 +2355,7 @@ fun ComposeScreen(
         Column(
             modifier = Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState()),
+                .vertical_scroll_with_indicator(),
         ) {
             val scheduled_label = iso_to_epoch_ms(scheduled_at_iso)?.format_full_datetime()
             if (scheduled_send && scheduled_label != null) {
@@ -2689,7 +2776,22 @@ fun ComposeScreen(
                     ) {
                         val (quoted_from, quoted_ts, quoted_subject) = quoted_meta
                             ?: Triple("", "", "")
-                        Column(
+                        val editable_forward_seed = forward_seed_html
+                        if (editable_forward_seed != null) {
+                            forward_block_editor(
+                                seed_html = editable_forward_seed,
+                                on_html_change = { edited ->
+                                    if (edited != forward_edited_html) {
+                                        forward_edited_html = edited
+                                        schedule_draft_save()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .padding(top = AsterSpacing.sm, bottom = AsterSpacing.sm)
+                                    .clip(quoted_preview_card_shape)
+                                    .testTag("compose_forward_editor"),
+                            )
+                        } else Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = AsterSpacing.sm, bottom = AsterSpacing.sm)
@@ -2725,7 +2827,7 @@ fun ComposeScreen(
                             .fillMaxWidth()
                             .height(72.dp)
                             .clickable(
-                                interactionSource = org.astermail.android.design.remember_click_interaction(),
+                                interactionSource = null,
                                 indication = null,
                             ) {
                                 body_editor_ref.value?.let { et ->
@@ -2904,6 +3006,7 @@ fun ComposeScreen(
             primary = primary_sender_email,
             options = alias_options,
             custom_domain_set = settings_state.custom_domain_addresses.map { it.address }.toSet(),
+            catch_all_set = alias_options.toSet() - base_alias_options.toSet(),
             on_close = { show_from_sheet = false },
             on_select = { selected ->
                 from_alias = selected
@@ -3096,6 +3199,7 @@ fun ComposeScreen(
         val picker_context = LocalContext.current
         val picker_theme = picker_theme_res()
         LaunchedEffect(Unit) {
+            val limit_to_sealed_window = external_sender_tokens[from_alias] == null
             val calendar = org.astermail.android.ui.mail.AsterTimePreferences.account_calendar()
             val date_picker = android.app.DatePickerDialog(
                 picker_context,
@@ -3111,6 +3215,16 @@ fun ComposeScreen(
                             if (cal.timeInMillis < System.currentTimeMillis() + minimum_schedule_lead_ms) {
                                 show_schedule_picker = false
                                 send_error = context.getString(R.string.schedule_time_in_past)
+                            } else if (
+                                limit_to_sealed_window &&
+                                org.astermail.android.mail.exceeds_sealed_schedule_window(
+                                    cal.timeInMillis,
+                                    System.currentTimeMillis(),
+                                )
+                            ) {
+                                show_schedule_picker = false
+                                if (scheduled_at_iso == null) scheduled_send = false
+                                send_error = context.getString(R.string.scheduled_too_far_ahead)
                             } else {
                                 scheduled_at_iso = java.time.Instant.ofEpochMilli(cal.timeInMillis).toString()
                                 scheduled_send = true
@@ -3132,6 +3246,10 @@ fun ComposeScreen(
                 calendar.get(java.util.Calendar.DAY_OF_MONTH),
             )
             date_picker.datePicker.minDate = System.currentTimeMillis()
+            if (limit_to_sealed_window) {
+                date_picker.datePicker.maxDate =
+                    org.astermail.android.mail.latest_sealed_schedule_ms(System.currentTimeMillis())
+            }
             date_picker.setOnCancelListener {
                 show_schedule_picker = false
                 scheduled_send = false
@@ -3377,7 +3495,7 @@ fun ComposeScreen(
                         val dialog_attachments = attachments
                         mail_vm.save_draft_and_finish(
                             subject = subject,
-                            body_html = draft_body_with_signature(),
+                            body_html = draft_body_for_save(),
                             sender_email = from_alias,
                             to = to_chips,
                             cc = cc_chips,
@@ -3435,10 +3553,10 @@ private fun format_file_size(bytes: Long): String {
 }
 
 @Composable
-private fun send_fab(enabled: Boolean, on_click: () -> Unit) {
+private fun send_fab(active: Boolean, enabled: Boolean, on_click: () -> Unit) {
     val colors = AsterMaterial.colors
-    val bg = if (enabled) colors.accent_blue else colors.bg_hover
-    val tint = if (enabled) colors.on_accent else colors.text_muted
+    val bg = if (active) colors.accent_blue else colors.bg_hover
+    val tint = if (active) colors.on_accent else colors.text_muted
     Box(
         modifier = Modifier
             .size(40.dp)
@@ -3510,18 +3628,21 @@ private fun chip_input(
     show_encryption_indicator: Boolean = true,
 ) {
     val colors = AsterMaterial.colors
-    val query = input.trim().lowercase()
+    val query = org.astermail.android.ui.search.fold_text(input.trim())
     var suggestions_dismissed by remember { mutableStateOf(false) }
     LaunchedEffect(chips.size) { suggestions_dismissed = false }
     val filtered_suggestions = remember(query, suggestions, chips) {
-        if (query.isEmpty() || suggestions.isEmpty() || is_valid_email_chip(query)) {
+        if (query.isEmpty() || suggestions.isEmpty()) {
             emptyList()
         } else {
+            val chosen = chips.map { it.lowercase() }
             suggestions
                 .filter { contact ->
                     val email = contact.email.lowercase()
-                    val name = contact.name.lowercase()
-                    (email.contains(query) || name.contains(query)) && email !in chips.map { it.lowercase() }
+                    val folded_email = org.astermail.android.ui.search.fold_text(contact.email)
+                    val folded_name = org.astermail.android.ui.search.fold_text(contact.name)
+                    (folded_email.contains(query) || folded_name.contains(query)) &&
+                        folded_email != query && email !in chosen
                 }
                 .take(3)
         }
@@ -4176,6 +4297,7 @@ private fun FromAliasSheet(
     primary: String,
     options: List<String>,
     custom_domain_set: Set<String> = emptySet(),
+    catch_all_set: Set<String> = emptySet(),
     on_close: () -> Unit,
     on_select: (String) -> Unit,
     on_set_primary: (String) -> Unit,
@@ -4186,13 +4308,18 @@ private fun FromAliasSheet(
     val colors = AsterMaterial.colors
     val state = rememberModalBottomSheetState()
     var query by remember { mutableStateOf("") }
-    val normalized_query = query.trim().lowercase()
+    val normalized_query = org.astermail.android.ui.search.fold_text(query.trim())
     val first_option = options.firstOrNull()
     val visible_options = remember(options, primary, normalized_query) {
         val filtered = if (normalized_query.isEmpty()) {
             options
         } else {
-            options.filter { it.lowercase().contains(normalized_query) }
+            options.filter { option ->
+                org.astermail.android.ui.search.fold_text(option).contains(normalized_query) ||
+                    resolve_display_name(option)?.let {
+                        org.astermail.android.ui.search.fold_text(it).contains(normalized_query)
+                    } == true
+            }
         }
         val (pinned, rest) = filtered.partition { it.equals(primary, ignoreCase = true) }
         pinned + rest
@@ -4262,6 +4389,7 @@ private fun FromAliasSheet(
                 items(visible_options, key = { it }) { opt ->
                     val label = when {
                         opt == first_option -> stringResource(R.string.primary_account)
+                        catch_all_set.contains(opt) -> stringResource(R.string.catch_all)
                         custom_domain_set.contains(opt) -> stringResource(R.string.custom_domain)
                         else -> stringResource(R.string.alias)
                     }
@@ -4294,7 +4422,9 @@ private fun FromAliasSheet(
                                 fontSize = 12.sp,
                             )
                         }
-                        Icon(
+                        if (catch_all_set.contains(opt)) {
+                            Spacer(Modifier.size(36.dp))
+                        } else Icon(
                             imageVector = if (opt == primary) pin_icon_filled else pin_icon,
                             contentDescription = stringResource(R.string.set_as_primary),
                             tint = if (opt == primary) colors.accent_blue else colors.text_muted,
@@ -4481,7 +4611,7 @@ private fun TemplatePickerSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 420.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .vertical_scroll_with_indicator(),
                     ) {
                     items.forEach { tpl ->
                         Row(
@@ -4624,6 +4754,10 @@ private fun signature_web_card(html: String) {
 
 @Composable
 internal fun signature_html_web_preview(html: String, modifier: Modifier = Modifier) {
+    if (!org.astermail.android.ui.common.remember_webview_usable()) {
+        org.astermail.android.ui.common.webview_unavailable_notice(modifier)
+        return
+    }
     androidx.compose.ui.viewinterop.AndroidView(
         factory = { ctx ->
             android.webkit.WebView(ctx).apply {
@@ -4670,6 +4804,12 @@ internal fun signature_html_web_preview(html: String, modifier: Modifier = Modif
                 "</head><body>" + safe_html + "</body></html>"
             wv.tag = html
             wv.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null)
+        },
+        onRelease = { wv ->
+            runCatching {
+                wv.stopLoading()
+                wv.destroy()
+            }
         },
         modifier = modifier,
     )
@@ -4935,7 +5075,7 @@ internal fun ExpiringSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .imePadding()
-                .verticalScroll(rememberScrollState())
+                .vertical_scroll_with_indicator()
                 .padding(horizontal = AsterSpacing.md),
         ) {
             Text(
@@ -5111,7 +5251,7 @@ private fun toggle_sheet_row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(SquircleShape(8.dp))
-            .clickable(onClick = on_click)
+            .selectable(selected = active, onClick = on_click)
             .padding(horizontal = AsterSpacing.sm, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -5568,3 +5708,12 @@ private fun compose_status_banner(
         )
     }
 }
+
+internal const val max_saved_text_chars = 50_000
+
+internal fun bounded_saved_text(value: String): String? = value.takeIf { it.length <= max_saved_text_chars }
+
+private val bounded_text_saver = androidx.compose.runtime.saveable.Saver<androidx.compose.runtime.MutableState<String>, String>(
+    save = { bounded_saved_text(it.value) },
+    restore = { androidx.compose.runtime.mutableStateOf(it) },
+)
