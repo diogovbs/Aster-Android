@@ -22,7 +22,7 @@
     <string name="refresh">Atualizar</string>
     <string name="loading">A carregar...</string>
     <string name="copied_to_clipboard">Copiado para a área de transferência</string>
-    <string name="password">Senha</string>
+    <string name="password">Palavra-passe</string>
     <string name="email">E-mail</string>
     <string name="username">Nome de utilizador</string>
     <string name="unknown">Desconhecido</string>
@@ -46,7 +46,7 @@
     <string name="password_placeholder">Introduza a sua palavra-passe</string>
     <string name="forgot_password">Esqueceu-se da palavra-passe?</string>
     <string name="sign_in">Entrar</string>
-    <string name="sign_up">Cadastrar</string>
+    <string name="sign_up">Registar</string>
     <string name="no_account_prompt">Não tem uma conta? </string>
     <string name="have_account_prompt">Já tem uma conta? </string>
 
@@ -84,6 +84,12 @@
     <string name="loading_plans">A carregar planos...</string>
     <string name="plan_free">Gratuito</string>
     <string name="continue_with_free">Continuar com o gratuito</string>
+    <string name="signup_plan_subtitle">O Aster Mail é gratuito. Um plano pago acrescenta mais armazenamento, aliases e domínios personalizados.</string>
+    <string name="signup_plan_yearly_savings">Poupe %1$d%% com a faturação anual</string>
+    <string name="signup_plan_terms_play_year">%1$s por ano, cobrado através do Google Play. O plano é renovado automaticamente até o cancelar no Google Play.</string>
+    <string name="signup_plan_terms_play_month">%1$s por mês, cobrado através do Google Play. O plano é renovado automaticamente até o cancelar no Google Play.</string>
+    <string name="signup_plan_terms_year">%1$s por ano. O plano é renovado automaticamente até o cancelar nas Definições.</string>
+    <string name="signup_plan_terms_month">%1$s por mês. O plano é renovado automaticamente até o cancelar nas Definições.</string>
     <string name="continue_with_upgrade">Continuar com a atualização</string>
     <string name="monthly">Mensal</string>
     <string name="yearly">Anual</string>
@@ -132,9 +138,9 @@
     <string name="folder_scheduled">Agendados</string>
     <string name="folder_snoozed">Adiados</string>
     <string name="folder_spam">Spam</string>
-    <string name="folder_trash">Lixeira</string>
+    <string name="folder_trash">Lixo</string>
     <string name="folder_all_mail">Todos os e-mails</string>
-    <string name="folder_contacts">Contatos</string>
+    <string name="folder_contacts">Contactos</string>
     <string name="folder_subscriptions">Inscrições</string>
 
     <string name="all_caught_up">A sua caixa de entrada está vazia</string>
@@ -167,7 +173,7 @@
     <string name="mark_all_unread">Marcar tudo como não lido</string>
     <string name="select">Selecionar</string>
     <string name="select_all">Selecionar tudo</string>
-    <string name="empty_trash">Esvaziar lixeira</string>
+    <string name="empty_trash">Esvaziar lixo</string>
     <string name="empty_trash_confirm">Eliminar permanentemente todas as mensagens no Lixo? Esta ação não pode ser anulada.</string>
     <string name="delete_all">Eliminar tudo</string>
     <string name="open_drawer">Abrir gaveta</string>
@@ -220,6 +226,7 @@
     <string name="block_sender">Bloquear remetente</string>
     <string name="message_unavailable">Mensagem indisponível</string>
     <string name="message_replaced_or_deleted">Esta mensagem foi eliminada ou substituída por uma cópia mais recente. Para a encontrar, volte atrás e pesquise novamente.</string>
+    <string name="message_unavailable_offline">Esta mensagem não está disponível offline. Será aberta quando voltar a estar online.</string>
     <string name="no_subject">(sem assunto)</string>
     <string name="open_external_link">Abrir ligação externa?</string>
     <string name="leaving_aster_warning">Está prestes a sair do Aster e abrir esta ligação no seu navegador:</string>
@@ -300,7 +307,7 @@
     <string name="image">Imagem</string>
     <string name="device_file">Ficheiro do dispositivo</string>
     <string name="photo">Foto</string>
-    <string name="camera">Câmera</string>
+    <string name="camera">Câmara</string>
     <string name="cloud">Nuvem</string>
     <string name="send_from">Enviar de</string>
     <string name="primary_account">Conta principal</string>
@@ -319,7 +326,7 @@
     <string name="filter_unread">Não lido</string>
     <string name="filter_unread_only">Apenas não lidos</string>
     <string name="filter_starred">Com estrela</string>
-    <string name="filter_encrypted">Criptografado</string>
+    <string name="filter_encrypted">Encriptado</string>
     <string name="decrypting_indexing">A desencriptar e a indexar o correio...</string>
     <string name="search_operators">OPERADORES DE PESQUISA</string>
     <string name="op_from">from:</string>
@@ -339,9 +346,9 @@
     <string name="op_before">before:</string>
     <string name="op_before_desc">Antes de uma data</string>
     <string name="op_after">after:</string>
-    <string name="op_after_desc">Nos últimos N dias</string>
+    <string name="op_after_desc">A partir de uma data</string>
     <string name="op_date_today">date:today</string>
-    <string name="op_date_today_desc">Hoje, ontem, esta_semana</string>
+    <string name="op_date_today_desc">Valores: today, yesterday, this_week, last_week, this_month</string>
     <string name="op_label">label:</string>
     <string name="op_label_desc">Pesquisar por etiqueta</string>
     <string name="op_negate">-from:</string>
@@ -349,7 +356,7 @@
     <string name="search_privacy_note">Todas as pesquisas são encriptadas ponto a ponto. O seu correio é desencriptado localmente neste dispositivo - nada é enviado para o servidor.</string>
     <string name="no_results_found">Nenhum resultado encontrado</string>
 
-    <string name="contacts">Contatos</string>
+    <string name="contacts">Contactos</string>
     <string name="syncing">A sincronizar</string>
     <string name="sync_contacts">Sincronizar contactos</string>
     <string name="search_contacts">Pesquisar contactos</string>
@@ -370,7 +377,7 @@
     <string name="personal">Pessoal</string>
     <string name="work">Trabalho</string>
     <string name="phone">Telefone</string>
-    <string name="mobile">Celular</string>
+    <string name="mobile">Telemóvel</string>
     <string name="company">Empresa</string>
     <string name="title">Título</string>
     <string name="birthday">Aniversário</string>
@@ -431,7 +438,7 @@
     <string name="settings_accessibility_subtitle">Reduzir movimento, contraste</string>
     <string name="settings_security">Segurança</string>
     <string name="settings_security_subtitle">Palavra-passe, 2FA, sessões</string>
-    <string name="settings_encryption">Criptografia</string>
+    <string name="settings_encryption">Encriptação</string>
     <string name="settings_encryption_subtitle">Chaves PGP e recuperação</string>
     <string name="settings_aliases">Aliases</string>
     <string name="settings_domains">Domínios</string>
@@ -454,7 +461,7 @@
     <string name="smtp_token_port">Porta</string>
     <string name="smtp_token_security">Segurança</string>
     <string name="smtp_token_username">Nome de utilizador</string>
-    <string name="smtp_token_password">Senha</string>
+    <string name="smtp_token_password">Palavra-passe</string>
     <string name="smtp_token_copy_all">Copiar tudo</string>
     <string name="smtp_token_never_used">Nunca</string>
     <string name="smtp_token_revoke_title">Revogar token?</string>
@@ -515,6 +522,17 @@
     <string name="custom_theme_base_color_subtitle">Escolha uma cor e criamos uma paleta completa a partir dela</string>
     <string name="custom_theme_hex_placeholder">#3b82f6</string>
     <string name="custom_theme_hex_invalid">Introduza uma cor hexadecimal válida, como #3b82f6</string>
+    <string name="custom_theme_colors_title">Cores do tema</string>
+    <string name="custom_theme_role_accent">Destaque</string>
+    <string name="custom_theme_role_accent_hover">Destaque (ao passar o rato)</string>
+    <string name="custom_theme_role_background">Fundo</string>
+    <string name="custom_theme_role_background_secondary">Fundo (secundário)</string>
+    <string name="custom_theme_role_sidebar">Barra lateral</string>
+    <string name="custom_theme_role_text">Texto</string>
+    <string name="custom_theme_role_text_secondary">Texto (secundário)</string>
+    <string name="custom_theme_role_border">Limite</string>
+    <string name="custom_theme_reset_role">Repor para automático</string>
+    <string name="custom_theme_reset_all">Repor tudo para automático</string>
     <string name="custom_theme_upgrade_title">Tema personalizado</string>
     <string name="custom_theme_upgrade_description">Crie o seu próprio tema de cores a partir de qualquer cor base. Atualize o plano para o desbloquear.</string>
     <string name="font">Fonte</string>
@@ -668,7 +686,7 @@
     <string name="hours_ago">%dh atrás</string>
     <string name="days_ago">%dd atrás</string>
 
-    <string name="encryption_title">Criptografia</string>
+    <string name="encryption_title">Encriptação</string>
     <string name="identity_key">Chave de identidade</string>
     <string name="account">Conta</string>
     <string name="identity_key_fingerprint">Impressão digital da chave de identidade</string>
@@ -680,7 +698,7 @@
     <string name="recovery">Recuperação</string>
     <string name="key_rotation">Rotação de chaves</string>
     <string name="key_rotation_description">A sua chave de identidade é renovada sempre que muda a sua palavra-passe. As chaves anteriores são guardadas localmente para que as mensagens antigas continuem a poder ser desencriptadas.</string>
-    <string name="key_management">Gerenciamento de chaves</string>
+    <string name="key_management">Gestão de chaves</string>
     <string name="key_management_description">A rotação de chaves, a gestão de chaves PGP e a verificação de chaves de contactos estão disponíveis na aplicação web.</string>
 
     <string name="enter_your_password">Introduza a sua palavra-passe</string>
@@ -886,7 +904,7 @@
     <string name="ext_smtp_username">Nome de utilizador SMTP</string>
     <string name="ext_smtp_password">Palavra-passe SMTP</string>
     <string name="ext_field_email">Endereço de e-mail</string>
-    <string name="ext_field_password">Senha</string>
+    <string name="ext_field_password">Palavra-passe</string>
     <string name="ext_app_password_required">Este fornecedor exige uma palavra-passe de aplicação e não a palavra-passe habitual da conta.</string>
     <string name="ext_app_password_create">Criar uma palavra-passe de aplicação</string>
     <string name="ext_server_settings">Definições do servidor</string>
@@ -921,7 +939,7 @@
     <string name="ext_gmail_wizard_step_5_title">Cole a palavra-passe de app</string>
     <string name="ext_gmail_wizard_step_5_body">Cole a palavra-passe de aplicação abaixo, com ou sem espaços. O Aster guarda-a encriptada e utiliza-a apenas para sincronizar esta caixa de correio.</string>
     <string name="ext_gmail_wizard_import_note">O Aster importa todo o seu correio, incluindo as mensagens arquivadas, as enviadas e as etiquetas. Caixas de correio grandes podem demorar alguns dias, e pode continuar a utilizar o Aster durante a importação.</string>
-    <string name="ext_gmail_wizard_password_label">Senha de app</string>
+    <string name="ext_gmail_wizard_password_label">Palavra-passe de aplicação</string>
     <string name="ext_gmail_wizard_connect">Ligar o Gmail</string>
     <string name="ext_save_imap">Guardar conta IMAP</string>
     <string name="ext_no_accounts">Ainda não há contas externas.</string>
@@ -1085,6 +1103,7 @@
     <string name="error_ssl">A ligação segura falhou. Tente novamente.</string>
     <string name="error_generic">Algo correu mal. Tente novamente.</string>
     <string name="error_too_many_attempts">Demasiadas tentativas. Aguarde um momento e tente novamente.</string>
+    <string name="error_username_taken">Este nome de utilizador já está em uso. Escolha outro.</string>
 
     <string name="error_send_recovery">Não foi possível enviar o e-mail de recuperação</string>
     <string name="error_invalid_recovery_code">Um código de recuperação tem o formato ASTER-XXXX-XXXX-XXXX-XXXX. Verifique o código e introduza-o novamente.</string>
@@ -1178,7 +1197,7 @@
     <string name="locked_data_banner_dismiss">Dispensar</string>
     <string name="recover_data_title">Recuperar dados</string>
     <string name="recover_data_description">Para desbloquear dados anteriores a uma alteração ou reposição da palavra-passe, introduza a palavra-passe que utilizava nessa altura.</string>
-    <string name="recover_data_previous_password">Senha anterior</string>
+    <string name="recover_data_previous_password">Palavra-passe anterior</string>
     <string name="recover_data_button">Recuperar</string>
     <string name="recover_data_success">Os seus dados mais antigos foram desbloqueados.</string>
     <string name="recover_data_no_match">Essa palavra-passe não desbloqueou nenhum dado. Experimente outra palavra-passe anterior.</string>
@@ -1247,7 +1266,7 @@
     <string name="settings_plan_supernova_tagline">O máximo de armazenamento, aliases e domínios ilimitados e suporte dedicado.</string>
     <string name="settings_plan_lead_star">Tudo do Star, mais:</string>
     <string name="settings_plan_lead_nova">Tudo do Nova, mais:</string>
-    <string name="settings_plan_bullet_e2ee">Criptografia de ponta a ponta</string>
+    <string name="settings_plan_bullet_e2ee">Encriptação de ponta a ponta</string>
     <string name="settings_plan_bullet_zero_knowledge">Arquitetura de acesso zero</string>
     <string name="settings_plan_bullet_star_storage">50 GB de armazenamento encriptado</string>
     <string name="settings_plan_bullet_star_attachments">Anexos até 50 MB</string>
@@ -1255,7 +1274,6 @@
     <string name="settings_plan_bullet_star_domains">5 domínios personalizados</string>
     <string name="settings_plan_bullet_daily_send_limits">Limites diários de envio mais altos</string>
     <string name="settings_plan_bullet_star_templates">10 modelos de e-mail</string>
-    <string name="settings_plan_bullet_tracker_protection">Proteção contra rastreadores</string>
     <string name="settings_plan_bullet_vacation_reply">Resposta automática de férias</string>
     <string name="settings_plan_bullet_catch_all">Endereço de e-mail catch-all</string>
     <string name="settings_plan_bullet_auto_forwarding">Encaminhamento automático</string>
@@ -1272,9 +1290,8 @@
     <string name="settings_plan_bullet_unlimited_signatures">Assinaturas HTML ilimitadas</string>
     <string name="settings_plan_bullet_carddav_import">Importação de contactos CardDAV</string>
     <string name="settings_plan_bullet_contact_merge">Assistente de fusão de contactos</string>
-    <string name="settings_plan_bullet_encrypted_export">Exportação criptografada</string>
+    <string name="settings_plan_bullet_encrypted_export">Exportação encriptada</string>
     <string name="settings_plan_bullet_protected_folders">Pastas protegidas por palavra-passe</string>
-    <string name="settings_plan_bullet_key_rotation">Intervalos personalizados de rotação de chaves</string>
     <string name="settings_plan_bullet_supernova_storage">5 TB de armazenamento encriptado</string>
     <string name="settings_plan_bullet_supernova_attachments">Anexos até 250 MB</string>
     <string name="settings_plan_bullet_unlimited_domains">Domínios personalizados ilimitados</string>
@@ -1351,9 +1368,10 @@
     <string name="translation_show_original">Mostrar original</string>
     <string name="translation_failed">Falha na tradução</string>
     <string name="translation_wifi_required">Para transferir este pacote de idioma, ligue-se a uma rede Wi-Fi ou desative Transferir apenas por Wi-Fi nas Definições.</string>
-    <string name="translation_webview_outdated">Para traduzir o correio, atualize o Android System WebView.</string>
+    <string name="translation_webview_outdated">Para traduzir o correio, atualize o %1$s.</string>
+    <string name="webview_unavailable">Para mostrar este conteúdo, atualize o %1$s.</string>
     <string name="translation_webview_update">Atualizar</string>
-    <string name="translate_webview_outdated_notice">A tradução precisa de uma versão mais recente do Android System WebView. Para traduzir o correio neste dispositivo, atualize o Android System WebView no Google Play.</string>
+    <string name="translate_webview_outdated_notice">A tradução precisa de uma versão mais recente do %1$s. Para traduzir o correio neste dispositivo, atualize o %1$s no Google Play.</string>
     <string name="customize_toolbar">Personalizar barra de ferramentas</string>
     <string name="customize_toolbar_subtitle">Escolha quais ações aparecem na barra inferior ao ler ou selecionar e-mails.</string>
     <string name="reading_toolbar">Ao ler e-mails</string>
@@ -1558,10 +1576,10 @@
     <string name="links_cleaned">LIGAÇÕES LIMPAS</string>
     <string name="decrypt_retrying">A tentar novamente</string>
     <string name="decrypt_retry_failed">Continua a não ser possível desencriptar esta mensagem</string>
-    <string name="trash">Lixeira</string>
+    <string name="trash">Lixo</string>
     <string name="unarchive">Desarquivar</string>
     <string name="label">Etiqueta</string>
-    <string name="encryption">Criptografia</string>
+    <string name="encryption">Encriptação</string>
     <string name="tracker_protection">Proteção contra rastreadores</string>
     <string name="encrypted_e2e">Encriptado ponto a ponto</string>
     <string name="encrypted_in_transit">Encriptado em trânsito</string>
@@ -1640,6 +1658,13 @@
     <string name="link_url_placeholder">exemplo.com</string>
     <string name="send_still_trying">Ainda a enviar. O Aster vai continuar a tentar em segundo plano.</string>
     <string name="folder_decrypt_failed">Pasta (falha ao desencriptar)</string>
+    <string name="label_decrypt_failed">Não foi possível desencriptar</string>
+    <string name="parent_label">Etiqueta principal</string>
+    <string name="parent_label_none">Nenhuma</string>
+    <string name="error_tag_parent_not_found">Essa etiqueta principal já não existe.</string>
+    <string name="error_tag_parent_self">Uma etiqueta não pode ser a sua própria etiqueta principal.</string>
+    <string name="error_tag_parent_cycle">Uma etiqueta não pode ser movida para baixo de uma das suas próprias subetiquetas.</string>
+    <string name="error_tag_parent_too_deep">As etiquetas não podem ser aninhadas em mais de cinco níveis.</string>
     <string name="settings_search_placeholder">Pesquisar definições</string>
     <string name="settings_search_hint">Escreva para pesquisar em todas as definições</string>
     <string name="settings_profile">Perfil</string>
@@ -1656,10 +1681,6 @@
     <string name="settings_section_other">Outros</string>
     <string name="phishing_warning_title">Esta mensagem parece suspeita</string>
     <string name="phishing_dangerous_title">E-mail perigoso bloqueado</string>
-    <string name="phishing_signal_sender_domain_mimics">O domínio do remetente \"%1$s\" imita \"%2$s\" com caracteres parecidos</string>
-    <string name="phishing_signal_sender_domain_resembles">O domínio do remetente \"%1$s\" assemelha-se a \"%2$s\" com caracteres substituídos</string>
-    <string name="phishing_signal_display_name_brand">O nome apresentado contém \"%1$s\", mas o e-mail vem de %2$s</string>
-    <string name="phishing_signal_display_name_email">O nome apresentado contém o endereço \"%1$s\", mas o remetente é %2$s</string>
     <string name="phishing_show_details">Mostrar detalhes</string>
     <string name="phishing_hide_details">Ocultar detalhes</string>
     <string name="phishing_privacy_note">Detetado no seu dispositivo. O Aster nunca lê o seu e-mail.</string>
@@ -1676,7 +1697,7 @@
     <string name="attachment_already_attached">\"%1$s\" já está anexado</string>
     <string name="attachment_read_failed">Não foi possível ler \"%1$s\"</string>
     <string name="scheduled_send_no_attachments">Os e-mails agendados ainda não podem incluir anexos. Remova-os ou envie agora.</string>
-    <string name="cannot_mix_recipients">Os utilizadores do Aster e os endereços externos não podem estar no mesmo e-mail. Envie duas mensagens separadas.</string>
+    <string name="password_needs_outside_recipients_only">A proteção por palavra-passe só funciona quando todos os destinatários usam outro fornecedor de email. Para incluir utilizadores Aster, desative a proteção por palavra-passe ou envie-lhes uma mensagem separada.</string>
     <string name="import_provider_gmail">Google</string>
     <string name="import_provider_outlook">Microsoft</string>
     <string name="import_provider_yahoo">Yahoo</string>
@@ -1808,7 +1829,7 @@
     <string name="upgrade_reassurance">Cancele quando quiser</string>
     <string name="upgrade_trust_line">Sem anúncios, sem rastreamento</string>
     <string name="upgrade_perk_storage">Mais espaço para mensagens e anexos</string>
-    <string name="upgrade_perk_aliases">Aliases ilimitados e domínios personalizados</string>
+    <string name="upgrade_perk_aliases">Mais aliases e domínios personalizados</string>
     <string name="upgrade_perk_domains">Domínios personalizados e funcionalidades profissionais</string>
     <string name="upgrade_perk_features">Filtros, modelos, assinaturas e mais</string>
     <string name="upgrade_resource_aliases">aliases</string>
@@ -1844,7 +1865,7 @@
     <string name="auto_discover_keys_sub">Encontrar automaticamente as chaves de encriptação dos contactos</string>
     <string name="encrypt_by_default">Encriptar por predefinição</string>
     <string name="encrypt_by_default_sub">Encriptar automaticamente todos os e-mails enviados</string>
-    <string name="require_encryption">Exigir criptografia</string>
+    <string name="require_encryption">Exigir encriptação</string>
     <string name="require_encryption_sub">Enviar apenas para destinatários com chaves conhecidas</string>
     <string name="show_encryption_indicators">Mostrar indicadores de encriptação</string>
     <string name="show_encryption_indicators_sub">Apresentar ícones de cadeado nos e-mails encriptados</string>
@@ -1920,8 +1941,8 @@
     <string name="auto_delete_spam_90">90 dias</string>
     <string name="auto_delete_spam_180">180 dias</string>
     <string name="auto_delete_spam_365">365 dias</string>
-    <string name="auto_delete_trash">Eliminar a lixeira automaticamente após</string>
-    <string name="auto_delete_trash_subtitle">Os e-mails na Lixeira mais antigos do que este período são eliminados permanentemente.</string>
+    <string name="auto_delete_trash">Eliminar o lixo automaticamente após</string>
+    <string name="auto_delete_trash_subtitle">Os e-mails no Lixo mais antigos do que este período são eliminados permanentemente.</string>
     <string name="auto_delete_spam_never">Nunca (manter para sempre)</string>
     <string name="emails_per_page">E-mails por página</string>
     <string name="emails_per_page_subtitle">Número de e-mails carregados por página na Caixa de entrada, Arquivo e outras pastas</string>
@@ -2061,7 +2082,7 @@
     <string name="alias_delete_behavior_info_title">Ação ao eliminar</string>
     <string name="alias_delete_behavior_info_desc">Define se os aliases eliminados vão primeiro para o Lixo ou são removidos imediatamente.</string>
     <string name="alias_delete_behavior_subtitle">Mover para o Lixo ou eliminar imediatamente</string>
-    <string name="alias_delete_behavior_trash">Lixeira</string>
+    <string name="alias_delete_behavior_trash">Lixo</string>
     <string name="alias_delete_behavior_immediate">Imediata</string>
     <string name="alias_always_expand_info_title">Sempre expandir</string>
     <string name="alias_always_expand_info_desc">Quando esta opção está ativada, o painel completo de definições do alias é apresentado por predefinição em vez de recolhido.</string>
@@ -2118,7 +2139,7 @@
     <string name="export_scope_section">O que exportar</string>
     <string name="export_scope_emails">E-mails</string>
     <string name="export_scope_emails_subtitle">Todas as mensagens da sua caixa de correio</string>
-    <string name="export_scope_contacts">Contatos</string>
+    <string name="export_scope_contacts">Contactos</string>
     <string name="export_scope_contacts_subtitle">A sua lista de contactos</string>
     <string name="export_format_section">Formato da exportação</string>
     <string name="export_format_mbox">MBOX</string>
@@ -2133,7 +2154,7 @@
     <string name="export_share_save">Partilhar / Guardar</string>
     <string name="export_private_key_dialog_title">Exportar chave privada</string>
     <string name="export_private_key_message">A sua chave privada será exportada no formato PGP armored. Introduza a palavra-passe da sua conta para autorizar a exportação.</string>
-    <string name="export_private_key_password_label">Senha da conta</string>
+    <string name="export_private_key_password_label">Palavra-passe da conta</string>
     <string name="export_private_key_exporting">A exportar...</string>
     <string name="export_private_key_button">Exportar</string>
     <string name="toast_private_key_copied">Chave privada copiada para a área de transferência</string>
@@ -2245,6 +2266,7 @@
     <string name="app_lock_verify_title">Confirme a sua identidade</string>
     <string name="app_lock_enter_to_change">Introduza o seu PIN atual para o alterar.</string>
     <string name="app_lock_enter_to_disable">Introduza o seu PIN para desativar o bloqueio da aplicação.</string>
+    <string name="app_lock_enter_to_enable_biometric">Para ativar o desbloqueio biométrico, introduza o seu PIN.</string>
     <string name="settings_alias_directories">Diretórios de alias</string>
     <string name="alias_directories">Diretórios de alias</string>
     <string name="alias_directories_description">Os diretórios de alias permitem-lhe receber e-mails em qualquer endereço com um prefixo partilhado. Partilhe o seu diretório e qualquer pessoa pode contactá-lo sem expor o seu endereço real.</string>
@@ -2271,7 +2293,6 @@
     <string name="kids_link_regenerated">Novo link gerado</string>
     <string name="kids_released">Reserva liberada</string>
     <string name="kids_action_failed">A ação falhou. Tente novamente.</string>
-    <string name="settings_connection">Conexão</string>
     <string name="image_failed_placeholder">[Não foi possível carregar a imagem]</string>
     <string name="image_lightbox_title">Pré-visualização da imagem</string>
     <string name="image_lightbox_failed">Não foi possível abrir esta imagem.</string>
@@ -2291,6 +2312,8 @@
         <item quantity="other">Foram encontradas %d subscrições novas</item>
     </plurals>
     <string name="reaction_info_title">Reação</string>
+    <string name="reaction_badge_label">Nova reação</string>
+    <string name="notification_new_reaction">Tem uma nova reação</string>
     <string name="reaction_info_you">Reagiu com %1$s</string>
     <string name="reaction_info_other">%1$s reagiu com %2$s</string>
     <string name="folder_locked_title">Pasta bloqueada</string>
@@ -2435,22 +2458,36 @@
     <string name="alias_export_download">Guardar</string>
     <string name="alias_export_failed">A exportação falhou. Nada foi guardado.</string>
     <string name="chip_any_time">Qualquer data</string>
-    <string name="chip_older_than_week">Mais de uma semana</string>
-    <string name="chip_older_than_month">Mais de um mês</string>
-    <string name="chip_older_than_six_months">Mais de 6 meses</string>
+    <string name="chip_last_7_days">Últimos 7 dias</string>
+    <string name="chip_last_30_days">Últimos 30 dias</string>
+    <string name="chip_last_6_months">Últimos 6 meses</string>
+    <string name="chip_last_year">Último ano</string>
     <string name="chip_older_than_year">Mais de um ano</string>
     <string name="chip_custom_range">Intervalo personalizado</string>
     <string name="chip_attachment_image">Imagem</string>
     <string name="chip_attachment_document">Documento</string>
     <string name="chip_attachment_pdf">PDF</string>
     <string name="chip_attachment_video">Vídeo</string>
-    <string name="chip_is_unread">Não lido</string>
+    <string name="chip_has_attachment">Com anexo</string>
+    <string name="chip_is_unread">Não lidos</string>
     <string name="chip_name_or_email">Nome ou e-mail</string>
     <string name="chip_no_people">Nenhuma pessoa correspondente</string>
     <string name="chip_advanced_search">Pesquisa avançada</string>
     <string name="spam_trash_hidden_notice">Algumas mensagens no Spam e no Lixo correspondem à sua pesquisa.</string>
     <string name="view_spam_trash_messages">Ver mensagens</string>
-    <string name="search_scope_anywhere">E-mail, spam e Lixo</string>
+    <string name="chip_everywhere">Em todo o lado</string>
+    <string name="chip_everywhere_hint">Inclui Spam e Lixo</string>
+    <string name="chip_clear_filters">Limpar filtros</string>
+    <string name="search_chip_negated_term">-%1$s</string>
+    <string name="from_date">Data de início</string>
+    <string name="to_date">Data de fim</string>
+    <string name="advanced_does_not_have">Não contém</string>
+    <string name="advanced_size">Tamanho</string>
+    <string name="advanced_size_larger">maior que</string>
+    <string name="advanced_size_smaller">menor que</string>
+    <string name="size_unit_bytes">Bytes</string>
+    <string name="size_unit_kb">KB</string>
+    <string name="size_unit_mb">MB</string>
     <string name="advanced_has_words">Contém as palavras</string>
     <string name="advanced_date_within">Data no intervalo de</string>
     <string name="advanced_search_scope">Pesquisar em</string>
@@ -2486,6 +2523,8 @@
     <string name="domain_purchase_search_placeholder">Pesquise um nome de domínio</string>
     <string name="domain_purchase_per_year">%1$s/ano</string>
     <string name="domain_purchase_taken">Indisponível</string>
+    <string name="domain_purchase_unchecked">Não verificado</string>
+    <string name="domain_purchase_unchecked_hint">Não foi possível verificar este domínio agora. Tente novamente mais tarde.</string>
     <string name="domain_purchase_no_results">Nenhum domínio disponível encontrado</string>
     <string name="domain_purchase_renews_at">Renova por %1$s/ano</string>
     <string name="domain_purchase_years">Período de registo</string>
@@ -2836,19 +2875,12 @@
     <string name="audit_event_session_revoked">Sessão revogada</string>
     <string name="audit_event_settings_changed">Definições alteradas</string>
     <string name="audit_event_suspicious_activity">Atividade suspeita</string>
-    <string name="connection_cdn_relay">Retransmissão CDN</string>
-    <string name="connection_cdn_relay_description">Encaminhe o tráfego através de uma retransmissão de distribuição de conteúdos para ocultar o seu endereço IP.</string>
-    <string name="connection_description">Escolha como o Aster Mail se liga aos nossos servidores.</string>
-    <string name="connection_direct">Direta</string>
-    <string name="connection_direct_description">Ligue-se diretamente aos servidores do Aster para obter a maior rapidez.</string>
-    <string name="connection_method_header">Método de ligação</string>
     <string name="couldnt_move_to_inbox">Não foi possível mover para a caixa de entrada</string>
     <string name="domain_record_pending">Ainda não encontrado</string>
     <string name="domain_status_dns_pending">A aguardar DNS</string>
     <string name="domain_status_failed">A verificação falhou</string>
     <string name="domain_status_suspended">Suspenso</string>
     <string name="domain_status_verifying">A verificar</string>
-    <string name="failed_save_connection_preference">Não foi possível guardar a preferência de ligação</string>
     <string name="generate_ghost_alias_message">O Aster cria um endereço aleatório que reencaminha para a sua caixa de entrada. Pode eliminá-lo em qualquer altura sem afetar os seus outros endereços.</string>
     <string name="identity_changed_description">A chave de encriptação de %1$s é diferente da que viu anteriormente. Isto acontece quando alguém inicia sessão num novo dispositivo ou repõe a conta, mas também pode significar que alguém está a intercetar as suas mensagens. Confirme por outro canal antes de confiar nesta conversa.</string>
     <string name="identity_changed_dismiss">Verifiquei isto</string>
@@ -2881,7 +2913,7 @@
     <string name="show_sender_pictures_subtitle">Mostrar uma fotografia ou as iniciais de cada remetente na sua caixa de entrada</string>
     <string name="theme_sync_across_devices">Sincronizar o tema entre dispositivos</string>
     <string name="theme_sync_across_devices_subtitle">Desative para manter um tema diferente neste dispositivo.</string>
-    <string name="view_encryption_details">Ver detalhes da encriptação</string>
+    <string name="view_security_details">Ver detalhes de segurança</string>
     <string name="resubscribe">Subscrever novamente</string>
     <string name="translate_confirm_title">Ativar a tradução?</string>
     <string name="translate_confirm_message">O Aster traduz o correio no seu dispositivo, por isso nada do que lê é enviado para um serviço de tradução. Da primeira vez que traduz a partir de um idioma, o Aster transfere um pacote de idioma de 20 a 55 MB e guarda-o neste dispositivo. Pode remover os pacotes quando quiser.</string>
@@ -3000,7 +3032,7 @@
     <string name="restore">Restaurar</string>
     <string name="contact_trash_confirm_message">Pode restaurar contactos a partir do Lixo.</string>
     <string name="empty_contacts_trash_confirm_message">Eliminar permanentemente todos os contactos no Lixo? Esta ação não pode ser anulada.</string>
-    <string name="contact_restored">Contato restaurado</string>
+    <string name="contact_restored">Contacto restaurado</string>
     <string name="contact_moved_to_trash">Contacto movido para o Lixo</string>
     <string name="contacts_in_trash_notice">Os contactos no Lixo são eliminados definitivamente após 30 dias.</string>
     <string name="contacts_import_empty">Nenhum contacto encontrado nesse ficheiro</string>
@@ -3077,6 +3109,27 @@
     <string name="order_card_view_order">Ver encomenda</string>
     <string name="order_card_collapse">Recolher detalhes da encomenda</string>
     <string name="order_card_expand">Expandir detalhes da encomenda</string>
+    <string name="receipt_card_privacy">Extraído localmente do seu e-mail, e nada é enviado aos nossos servidores.</string>
+    <string name="receipt_card_receipt_from">Recibo de %1$s</string>
+    <string name="receipt_card_receipt_number">Recibo n.º %1$s</string>
+    <string name="receipt_card_looks_right">Está correto</string>
+    <string name="receipt_card_not_right">Não está correto?</string>
+    <string name="receipt_card_review_title">Corrigir os detalhes</string>
+    <string name="receipt_card_hide">Ocultar este cartão</string>
+    <string name="receipt_card_review_saved">Detalhes do recibo atualizados. Os próximos recibos deste remetente usam o nome corrigido.</string>
+    <string name="receipt_card_review_thanks">Obrigado pelo seu feedback</string>
+    <string name="receipt_card_view_receipt">Ver recibo</string>
+    <string name="receipt_card_payment">Pagamento</string>
+    <string name="receipt_card_merchant">Loja</string>
+    <string name="receipt_card_card_ending_in">Cartão terminado em %1$s</string>
+    <string name="receipt_card_subtotal">Subtotal</string>
+    <string name="receipt_card_shipping">Portes</string>
+    <string name="receipt_card_tax">Imposto</string>
+    <string name="receipt_card_discount">Desconto</string>
+    <plurals name="receipt_card_more_items">
+        <item quantity="one">+%1$d item a mais</item>
+        <item quantity="other">+%1$d itens a mais</item>
+    </plurals>
     <string name="shipping_status_label_created">Etiqueta criada</string>
     <string name="shipping_status_shipped">Enviado</string>
     <string name="shipping_status_in_transit">Em trânsito</string>
@@ -3144,7 +3197,7 @@
     <string name="alias_direction_received">Recebidos</string>
     <string name="alias_direction_sent">Enviados</string>
     <string name="alias_sent_indexing">As mensagens enviadas mais antigas ainda estão a ser indexadas.</string>
-    <string name="enc_keys_section_title">Chaves de Criptografia</string>
+    <string name="enc_keys_section_title">Chaves de encriptação</string>
     <string name="enc_openpgp_key_title">Sua chave OpenPGP</string>
     <string name="enc_verification_code_label">Código de verificação</string>
     <string name="enc_verification_code_info_title">O que é este código?</string>
@@ -3204,15 +3257,12 @@
     <string name="plan_badge_star">Estrela</string>
     <string name="plan_badge_nova">Nova</string>
     <string name="plan_badge_supernova">Supernova</string>
-    <string name="connection_relay_connected">Retransmissão ativada. A ligação pode ficar mais lenta.</string>
-    <string name="connection_relay_disconnected">Desconectado</string>
     <string name="search_groups">Pesquisar grupos</string>
     <string name="search_trash">Pesquisar no Lixo</string>
     <string name="no_groups_match">Nenhum grupo corresponde a \"%1$s\"</string>
     <string name="captcha_verifying">A verificar se é humano</string>
     <string name="captcha_unavailable">A verificação não carregou. Verifique a sua ligação e tente novamente.</string>
     <string name="captcha_retry">Tentar novamente</string>
-    <string name="connection_relay_failed">Não foi possível mudar o método de ligação. Tente novamente.</string>
     <string name="all_emails">Todos os e-mails</string>
     <string name="read_only">Apenas lidos</string>
     <string name="with_attachments">Com anexos</string>
@@ -3332,6 +3382,8 @@
     <string name="outbox_failed_reason_post_quantum">Um destinatário ainda não publicou chaves pós-quânticas, por isso o Aster não enviou esta mensagem. Para a enviar com encriptação ponto a ponto padrão, toque em Enviar mesmo assim.</string>
     <string name="outbox_failed_reason_identity">A chave de encriptação de um destinatário mudou, por isso o Aster não enviou esta mensagem. Para a enviar, confirme a alteração da chave na sua caixa de entrada e toque em Tentar novamente.</string>
     <string name="outbox_failed_reason_encryption">O Aster não conseguiu encriptar esta mensagem para um destinatário. Pode tentar novamente ou descartá-la.</string>
+    <string name="outbox_failed_reason_sender_refused">Não foi possível enviar esta mensagem a partir do endereço no campo De. Para a enviar, abra a mensagem em Rascunhos e escolha outro endereço.</string>
+    <string name="error_sender_address_refused">Não foi possível enviar esta mensagem a partir do endereço no campo De. Para a enviar, escolha outro endereço.</string>
     <string name="outbox_failed_reason_rejected">O servidor não aceitou esta mensagem. Verifique os destinatários e o tamanho dos anexos e tente novamente.</string>
     <string name="outbox_failed_reason_connection">O Aster não conseguiu contactar o servidor após várias tentativas. Verifique a sua ligação e tente novamente.</string>
     <string name="outbox_failed_reason_attachment">Um anexo já não está disponível neste dispositivo, por isso o Aster não pode enviar esta mensagem. Descarte-a e anexe o ficheiro novamente numa nova mensagem.</string>
@@ -3370,4 +3422,31 @@
     <string name="domain_dkim_rotated_auto">Chave DKIM rodada. O Aster Mail atualizou o registo DNS por si.</string>
     <string name="domain_dkim_notice_title">Adicione isto como um novo registo DNS</string>
     <string name="domain_dkim_notice_body">O seu correio já é assinado com a nova chave. Para passar nas verificações DKIM, adicione este registo TXT no seu fornecedor de DNS.</string>
+    <string name="move_to_category">Mover para a categoria</string>
+    <string name="moved_to_category">Movido para a categoria</string>
+    <string name="metadata_undecryptable_change">Este dispositivo não consegue abrir os detalhes desta mensagem, por isso a sua alteração não foi guardada. Para recarregar as suas chaves, termine sessão e volte a iniciá-la. A sua mensagem no servidor permanece inalterada.</string>
+    <string name="color_swatch_option">Cor %1$d de %2$d</string>
+    <string name="sender_warning_title">Verifique o endereço do remetente</string>
+    <string name="sender_warning_address_in_name">O nome do remetente mostra %1$s, mas esta mensagem vem de %2$s.</string>
+    <string name="sender_warning_lookalike_name">O nome do remetente está escrito para se parecer com %1$s, mas esta mensagem vem de %2$s.</string>
+    <string name="sender_warning_brand_name">O nome do remetente menciona %1$s, mas esta mensagem vem de %2$s, que não é um endereço conhecido de %1$s.</string>
+    <string name="sender_warning_home_brand_name">Esta mensagem não é da Aster. Vem de %1$s. A Aster nunca lhe pede a palavra-passe nem a frase de recuperação por e-mail.</string>
+    <string name="sender_warning_lookalike_domain">O domínio %1$s parece-se com %2$s, mas é um domínio diferente.</string>
+    <string name="sender_contact_notice">Este remetente tem o mesmo nome que o seu contacto %1$s, mas utiliza um endereço diferente.</string>
+    <string name="sender_reply_to_notice">As respostas a esta mensagem são enviadas para %1$s, que pertence a um domínio diferente do remetente.</string>
+    <string name="email_auth_unverified">Não verificado</string>
+    <string name="email_auth_unverified_desc">A Aster não conseguiu confirmar que %1$s enviou esta mensagem. Antes de abrir ligações ou anexos, verifique se conhece o remetente.</string>
+    <string name="dns_caveat_dkim_long_value">Este valor tem mais de 255 caracteres. Alguns fornecedores de DNS, como a Shopify, não aceitam valores tão longos. Se o seu o recusar, utilize uma chave mais curta.</string>
+    <string name="dkim_short_key_button">Utilizar uma chave mais curta</string>
+    <string name="dkim_short_key_confirm">O Aster substitui a chave DKIM deste domínio por uma chave de 1024 bits que cabe em 255 caracteres. O nome e o valor do registo mudam, por isso adicione o novo registo no seu fornecedor de DNS e elimine o antigo.</string>
+    <string name="dkim_short_key_confirm_button">Substituir chave</string>
+    <string name="dkim_short_key_working">A substituir a chave</string>
+    <string name="dkim_short_key_done">Nova chave DKIM criada. Adicione o novo registo no seu fornecedor de DNS.</string>
+    <string name="dkim_short_key_done_auto">Nova chave DKIM criada e publicada no seu DNS.</string>
+    <string name="dkim_short_key_wait">Aguarde alguns segundos e tente novamente.</string>
+    <string name="domain_hint_dkim_truncated">O seu registo DKIM está cortado, o que acontece quando um fornecedor de DNS limita os valores a 255 caracteres. Cole o valor completo ou utilize uma chave mais curta.</string>
+    <string name="domain_hint_dkim_quoted">O seu registo DKIM contém aspas. Remova-as e cole o valor numa só linha.</string>
+    <string name="domain_hint_dkim_other_key">O seu registo DKIM contém outra chave. Substitua o valor pelo que é apresentado aqui.</string>
+    <string name="domain_reason_dkim_missing_or_stale">Seus e-mails enviados não são assinados, o que os faz parecer falsos. Adicione o registro de assinatura para que sejam confiáveis.</string>
+    <string name="domain_check_generic_failure">Este registro ainda não está configurado corretamente. Adicione o registro abaixo para resolver.</string>
 </resources>

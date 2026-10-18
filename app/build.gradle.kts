@@ -40,8 +40,8 @@ android {
         applicationId = "org.astermail.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 202
-        versionName = "0.6.193"
+        versionCode = 216
+        versionName = "1.0.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -102,6 +102,9 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.all { test ->
+            test.maxHeapSize = "2g"
+        }
     }
 
     androidResources {
@@ -181,7 +184,7 @@ dependencies {
 
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
-    implementation("net.zetetic:sqlcipher-android:4.19.0")
+    implementation("net.zetetic:sqlcipher-android:4.19.1")
     implementation("androidx.sqlite:sqlite:2.4.0")
 
     implementation(libs.work.runtime.ktx)

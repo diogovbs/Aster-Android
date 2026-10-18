@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import org.astermail.android.R
 import org.astermail.android.security.EmailAuthVerdict
+import org.astermail.android.security.SenderTrustMessage
 import org.astermail.android.security.summarize_email_authentication
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -64,6 +65,8 @@ data class Email(
     val system_origin: Boolean = false,
     val send_status: String? = null,
     val send_error: String? = null,
+    val trust_message: SenderTrustMessage? = null,
+    val has_unseen_reaction: Boolean = false,
 )
 
 data class list_folder_chip(
@@ -87,6 +90,7 @@ data class ThreadRow(
     val label_icons: List<String> = emptyList(),
     val participants: List<Pair<String, String>> = emptyList(),
     val folder_chip: list_folder_chip? = null,
+    val has_unseen_reaction: Boolean = false,
 )
 
 fun thread_open_target_id(thread: ThreadRow): String = thread.newest.id
@@ -180,6 +184,7 @@ fun group_by_thread(
                 label_icons = icons,
                 participants = distinct_participants,
                 folder_chip = newest.folder_chip,
+                has_unseen_reaction = msgs.any { it.has_unseen_reaction },
             ),
         )
     }
@@ -205,6 +210,7 @@ fun flat_thread_rows(emails: List<Email>): List<ThreadRow> = emails.map { e ->
                 displayed_sender_email(e.display_sender_email, e.sender_email),
         ),
         folder_chip = e.folder_chip,
+        has_unseen_reaction = e.has_unseen_reaction,
     )
 }
 
@@ -255,6 +261,7 @@ data class ThreadMessage(
         org.astermail.android.crypto.PgpSignatureStatus.NONE,
     val send_status: String? = null,
     val send_error: String? = null,
+    val trust_message: SenderTrustMessage? = null,
 )
 
 val ThreadMessage.is_e2e_encrypted: Boolean
@@ -332,11 +339,15 @@ private fun parse_iso_timestamp(raw: String): Long = try {
     0L
 }
 
+fun current_tag_token(folder: String): String? =
+    folder.takeIf { it.startsWith("tag:") }?.removePrefix("tag:")?.takeIf { it.isNotEmpty() }
+
 fun inbox_item_to_email(
     item: org.astermail.android.mail.InboxItem,
     tags: List<org.astermail.android.api.tags.TagItem> = emptyList(),
     folder_chip: list_folder_chip? = null,
     context: android.content.Context? = null,
+    hidden_tag_token: String? = null,
 ): Email {
     val ts = parse_iso_timestamp(item.timestamp)
     val unknown_sender_label = context?.getString(org.astermail.android.R.string.unknown) ?: "Unknown"
@@ -344,7 +355,9 @@ fun inbox_item_to_email(
     val display_name = item.sender_name.ifBlank {
         item.sender_email.substringBefore('@').ifBlank { unknown_sender_label }
     }
-    val matched_tags = tags.filter { it.tag_token in item.tag_tokens && it.encrypted_name.isNotBlank() }
+    val matched_tags = tags.filter {
+        it.tag_token in item.tag_tokens && it.encrypted_name.isNotBlank() && it.tag_token != hidden_tag_token
+    }
     return Email(
         id = item.id,
         thread_id = item.thread_token?.takeIf { it.isNotBlank() } ?: item.id,
@@ -377,21 +390,53 @@ fun inbox_item_to_email(
         system_origin = item.raw_item.system_origin,
         send_status = item.raw_item.send_status,
         send_error = item.raw_item.send_error,
+        trust_message = inbox_item_trust_message(item),
+        has_unseen_reaction = item.has_unseen_reaction,
+    )
+}
+
+fun inbox_item_trust_message(item: org.astermail.android.mail.InboxItem): SenderTrustMessage? {
+    val item_type = item.raw_item.item_type ?: item.raw_item.metadata?.item_type
+    if (item_type != "received" || item.is_undecryptable) return null
+    return SenderTrustMessage(
+        sender_name = item.sender_name,
+        sender_email = item.sender_email,
+        display_sender_name = item.display_sender_name,
+        display_sender_email = item.display_sender_email,
+        spf_result = item.raw_item.spf_result,
+        dkim_result = item.raw_item.dkim_result,
+        dmarc_result = item.raw_item.dmarc_result,
+        sender_aligned = item.raw_item.sender_aligned,
+        sender_verified = item.raw_item.sender_verified,
+        sender_verified_domain = item.raw_item.sender_verified_domain,
+        is_external = item.raw_item.is_external,
+        sender_verification = item.sender_verification,
+    )
+}
+
+fun thread_message_trust_message(msg: org.astermail.android.mail.ThreadMessageDecrypted): SenderTrustMessage? {
+    if ((msg.raw_item.item_type ?: "received") != "received" || msg.is_undecryptable) return null
+    return SenderTrustMessage(
+        sender_name = msg.sender_name,
+        sender_email = msg.sender_email,
+        display_sender_name = msg.display_sender_name,
+        display_sender_email = msg.display_sender_email,
+        reply_to = org.astermail.android.security.reply_to_header_value(msg.raw_headers),
+        spf_result = msg.raw_item.spf_result,
+        dkim_result = msg.raw_item.dkim_result,
+        dmarc_result = msg.raw_item.dmarc_result,
+        sender_aligned = msg.raw_item.sender_aligned,
+        sender_verified = msg.raw_item.sender_verified,
+        sender_verified_domain = msg.raw_item.sender_verified_domain,
+        is_external = msg.raw_item.is_external,
+        sender_verification = msg.sender_verification,
     )
 }
 
 fun thread_message_to_mock(msg: org.astermail.android.mail.ThreadMessageDecrypted): ThreadMessage {
     val ts = parse_iso_timestamp(msg.timestamp)
-    val has_pgp_text = msg.body_text.contains("-----BEGIN PGP")
-    val html = if (msg.body_html != null && !msg.body_html.contains("-----BEGIN PGP")) {
-        msg.body_html
-    } else null
-    val raw_body = when {
-        html != null && (msg.body_text.isBlank() || has_pgp_text) -> html
-        has_pgp_text -> ""
-        else -> msg.body_text
-    }
-    val display_body = strip_html_simple(raw_body)
+    val html = select_display_html(msg.body_text, msg.body_html)
+    val display_body = select_display_body(msg.body_text, html)
     return ThreadMessage(
         id = msg.id,
         sender_name = msg.sender_name.ifBlank { msg.sender_email.substringBefore('@') },
@@ -424,7 +469,25 @@ fun thread_message_to_mock(msg: org.astermail.android.mail.ThreadMessageDecrypte
         pgp_signature = msg.pgp_signature,
         send_status = msg.raw_item.send_status,
         send_error = msg.raw_item.send_error,
+        trust_message = thread_message_trust_message(msg),
     )
+}
+
+private const val PGP_ARMOR_MARKER = "-----BEGIN PGP"
+
+internal fun select_display_html(body_text: String, body_html: String?): String? {
+    if (body_html.isNullOrBlank()) return null
+    val text_was_decrypted = body_text.isNotBlank() && !body_text.contains(PGP_ARMOR_MARKER)
+    return if (text_was_decrypted && body_html.contains(PGP_ARMOR_MARKER)) null else body_html
+}
+
+private val PATCH_MARKER = Regex("^(?:diff --git |@@ -\\d)", RegexOption.MULTILINE)
+
+internal fun select_display_body(body_text: String, html: String?): String = when {
+    body_text.isBlank() && html != null -> strip_html_simple(html)
+    body_text.contains(PGP_ARMOR_MARKER) || PATCH_MARKER.containsMatchIn(body_text) -> body_text
+    org.astermail.android.mail.looks_like_html_body(body_text) -> strip_html_simple(body_text)
+    else -> body_text
 }
 
 fun thread_message_with_attachments(
