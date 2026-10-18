@@ -125,8 +125,8 @@ private fun fallback_alias_limit(plan_code: String?): Int = when (plan_code) {
 
 private fun fallback_domain_limit(plan_code: String?): Int = when (plan_code) {
     "star" -> 5
-    "nova", "duo", "family" -> 30
-    "supernova" -> 0
+    "nova", "duo" -> 30
+    "supernova", "family" -> 0
     else -> 1
 }
 
@@ -161,7 +161,7 @@ private val family_features = listOf(
     R.string.settings_plan_bullet_family_members,
     R.string.settings_plan_bullet_unlimited_aliases,
     R.string.settings_plan_bullet_shared_aliases,
-    R.string.settings_plan_bullet_nova_domains,
+    R.string.settings_plan_bullet_unlimited_domains,
     R.string.settings_plan_bullet_e2ee,
     R.string.settings_plan_bullet_zero_knowledge,
     R.string.settings_plan_bullet_priority_support,
@@ -180,7 +180,6 @@ private val plan_tiers = listOf(
             R.string.settings_plan_bullet_star_domains,
             R.string.settings_plan_bullet_daily_send_limits,
             R.string.settings_plan_bullet_star_templates,
-            R.string.settings_plan_bullet_tracker_protection,
             R.string.settings_plan_bullet_vacation_reply,
             R.string.settings_plan_bullet_catch_all,
             R.string.settings_plan_bullet_auto_forwarding,
@@ -204,12 +203,10 @@ private val plan_tiers = listOf(
             R.string.settings_plan_bullet_daily_send_limits,
             R.string.settings_plan_bullet_unlimited_templates,
             R.string.settings_plan_bullet_unlimited_signatures,
-            R.string.settings_plan_bullet_tracker_protection,
             R.string.settings_plan_bullet_carddav_import,
             R.string.settings_plan_bullet_contact_merge,
             R.string.settings_plan_bullet_encrypted_export,
             R.string.settings_plan_bullet_protected_folders,
-            R.string.settings_plan_bullet_key_rotation,
             R.string.settings_plan_bullet_external_accounts,
             R.string.settings_plan_bullet_bridge_access,
         ),
@@ -225,7 +222,6 @@ private val plan_tiers = listOf(
             R.string.settings_plan_bullet_unlimited_aliases,
             R.string.settings_plan_bullet_unlimited_domains,
             R.string.settings_plan_bullet_daily_send_limits,
-            R.string.settings_plan_bullet_tracker_protection,
             R.string.settings_plan_bullet_receipt_tracking,
             R.string.settings_plan_bullet_external_accounts,
             R.string.settings_plan_bullet_bridge_access,
@@ -250,6 +246,8 @@ private val plan_tiers = listOf(
 )
 
 private val FAMILY_PLAN_CODES = setOf("duo", "family")
+
+private val SUPERNOVA_NUDGE_PLAN_CODES = setOf("free", "star", "nova")
 
 private fun tier_rank(code: String): Int = org.astermail.android.billing.plan_tier_rank(code)
 
@@ -492,7 +490,7 @@ fun SubscriptionsScreen(
 
     var plans_section_offset by remember { mutableStateOf(0f) }
     var selected_addon_id by remember { mutableStateOf<String?>(null) }
-    var addon_interval by remember { mutableStateOf("month") }
+    var addon_interval by remember { mutableStateOf<String?>(null) }
     var plan_type by remember(current_code) {
         mutableStateOf(if (current_code in FAMILY_PLAN_CODES) "family" else "individual")
     }
@@ -502,6 +500,18 @@ fun SubscriptionsScreen(
     val storage_limit_bytes = storage_overview?.total_bytes ?: 0L
     val storage_over_limit = storage_overview?.is_over_limit == true ||
         (storage_limit_bytes > 0 && storage_used_bytes > storage_limit_bytes)
+    val addon_quotes = if (play_install) {
+        org.astermail.android.billing.play_storage_addon_quotes(
+            billing_state.storage_addons?.available_addons.orEmpty(),
+            billing_state.play_offers,
+            billing_state.play_addon_products,
+        )
+    } else {
+        org.astermail.android.billing.card_storage_addon_quotes(billing_state.storage_addons?.available_addons.orEmpty())
+    }
+    val effective_addon_interval = org.astermail.android.billing.effective_storage_addon_interval(addon_interval, addon_quotes)
+    val effective_addon_id = selected_addon_id ?: org.astermail.android.billing.featured_storage_addon_id(addon_quotes)
+    val storage_needs_space = org.astermail.android.billing.shows_storage_usage_nudge(storage_used_bytes, storage_limit_bytes)
     val is_paid_plan = sub != null && current_code != "free"
     val current_tier = plan_tiers.firstOrNull { it.code == current_code }
     val can_cancel = sub != null &&
@@ -661,31 +671,20 @@ fun SubscriptionsScreen(
         }
         val history_count = billing_state.history.size
         val addons = billing_state.storage_addons
-        val available_addons = if (play_install) {
-            org.astermail.android.billing.apply_play_addon_prices(
-                addons?.available_addons.orEmpty(),
-                billing_state.play_offers,
-                billing_state.play_addon_products,
-                addon_interval,
-            )
-        } else {
-            addons?.available_addons.orEmpty()
-        }
         val active_addons = addons?.active_addons.orEmpty()
-        val has_addons = (!play_install || play_mode) && (available_addons.isNotEmpty() || active_addons.isNotEmpty())
+        val has_addons = (!play_install || play_mode) && (addon_quotes.isNotEmpty() || active_addons.isNotEmpty())
         val play_active_addon_ids = billing_state.play_active_addons.map { it.product_id }.toSet()
         val play_yearly_addon_ids = billing_state.play_active_addons.filter { it.term_months == 12 }.map { it.product_id }.toSet()
-        val addons_sell_yearly = play_install &&
-            org.astermail.android.billing.play_addon_sells_yearly(billing_state.play_offers, billing_state.play_addon_products)
+        val addons_sell_yearly = org.astermail.android.billing.storage_addons_sell_yearly(addon_quotes)
         val addon_yearly_badge = if (addons_sell_yearly) {
-            org.astermail.android.billing.play_addon_yearly_savings_percent(billing_state.play_offers, billing_state.play_addon_products)
-                ?.takeIf { it > 0 }
-                ?.let { stringResource(R.string.save_percent, it) }
+            org.astermail.android.billing.storage_addons_badge_percent(addon_quotes)?.let { stringResource(R.string.save_percent, it) }
         } else {
             null
         }
         var show_plans by remember(is_paid_plan) { mutableStateOf(!is_paid_plan) }
-        var show_addons by remember(scroll_to_addons) { mutableStateOf(scroll_to_addons) }
+        var show_addons by remember(scroll_to_addons, storage_needs_space) {
+            mutableStateOf(scroll_to_addons || (storage_needs_space && is_paid_plan))
+        }
         var show_history by remember { mutableStateOf(false) }
         val member_since_text = state.user?.created_at
             ?.let { absolute_date_label(it) }
@@ -799,7 +798,6 @@ fun SubscriptionsScreen(
                 }
             }
         }
-        billing_wordmark()
         if (sub == null && (state.is_loading || !plan_load_settled)) {
             skeleton_hero_card(lines = 3)
             v_gap(AsterSpacing.lg)
@@ -1113,11 +1111,10 @@ fun SubscriptionsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             compare_code?.let { code ->
-                billing_compare_sheet(
+                billing_compare_view(
                     feed = comparison_feed,
                     individual_options = individual_plan_options,
                     family_options = family_plan_options,
-                    initial_type = if (code in FAMILY_PLAN_CODES) "family" else "individual",
                     initial_code = code,
                     current_code = if (sub != null) current_code else null,
                     currency = detected_currency,
@@ -1152,23 +1149,30 @@ fun SubscriptionsScreen(
                 if (show_addons) {
                     Column(modifier = Modifier.padding(bottom = AsterSpacing.xs)) {
                         billing_addons_panel(
-                            available = available_addons,
+                            quotes = addon_quotes,
                             active = active_addons,
-                            selected_id = selected_addon_id,
+                            selected_id = effective_addon_id,
                             currency = detected_currency,
                             is_acting = billing_state.is_acting,
                             is_buying = billing_state.is_acting && billing_state.acting_action?.startsWith("addon_") == true,
-                            interval = if (addons_sell_yearly) addon_interval else "month",
+                            interval = effective_addon_interval,
                             yearly_badge = addon_yearly_badge,
                             on_interval = if (addons_sell_yearly) {
-                                { next ->
-                                    if (next != addon_interval) {
-                                        addon_interval = next
-                                        selected_addon_id = null
-                                    }
-                                }
+                                { next -> addon_interval = next }
                             } else {
                                 null
+                            },
+                            storage_used_bytes = storage_used_bytes,
+                            storage_limit_bytes = storage_limit_bytes,
+                            storage_over_limit = storage_over_limit,
+                            show_supernova_nudge = current_code in SUPERNOVA_NUDGE_PLAN_CODES,
+                            on_supernova = {
+                                plan_type = "individual"
+                                show_plans = true
+                                coroutine_scope.launch {
+                                    kotlinx.coroutines.delay(150)
+                                    scroll_state.animateScrollTo(plans_section_offset.toInt().coerceAtLeast(0))
+                                }
                             },
                             price_label_for = { bytes, interval ->
                                 if (play_install) {
@@ -1183,12 +1187,16 @@ fun SubscriptionsScreen(
                                 }
                             },
                             active_interval_for = { bytes ->
-                                val product_id = if (play_install) {
-                                    org.astermail.android.billing.play_addon_product_for(billing_state.play_addon_products, bytes)?.product_id
+                                if (play_install) {
+                                    val product_id = org.astermail.android.billing.play_addon_product_for(
+                                        billing_state.play_addon_products,
+                                        bytes,
+                                    )?.product_id
+                                    if (product_id != null && product_id in play_yearly_addon_ids) "year" else "month"
                                 } else {
-                                    null
+                                    active_addons.firstOrNull { it.size_bytes == bytes }?.billing_period
+                                        ?.takeIf { it == "year" } ?: "month"
                                 }
-                                if (product_id != null && product_id in play_yearly_addon_ids) "year" else "month"
                             },
                             play_product_for = { bytes ->
                                 if (play_install) {
@@ -1200,9 +1208,9 @@ fun SubscriptionsScreen(
                                 }
                             },
                             on_manage_play = { product_id -> billing_vm.manage_play_addon(product_id) },
-                            on_select = { id -> selected_addon_id = if (selected_addon_id == id) null else id },
+                            on_select = { id -> selected_addon_id = id },
                             on_buy = {
-                                val id = selected_addon_id
+                                val id = effective_addon_id
                                 if (id == null) {
                                     android.widget.Toast.makeText(context, select_addon_first, android.widget.Toast.LENGTH_SHORT).show()
                                 } else if (!billing_state.is_acting) {
@@ -1318,7 +1326,7 @@ fun SubscriptionsScreen(
         pending_addon_id = null
         if (billing_state.is_acting) return@LaunchedEffect
         if (addon_id != null) {
-            billing_vm.purchase_storage_addon(addon_id, addon_interval)
+            billing_vm.purchase_storage_addon(addon_id, effective_addon_interval)
         } else if (plan_code != null) {
             billing_vm.start_checkout(plan_code, billing_interval, detected_currency)
         }
@@ -1336,8 +1344,16 @@ fun SubscriptionsScreen(
             org.astermail.android.billing.api_plan_price_cents(billing_state.available_plans, it, "year")
         }
         val picker_yearly_selected = billing_interval == "year"
-        val picker_amount_cents = picker_addon?.price_cents
-            ?: if (picker_yearly_selected) picker_yearly else picker_monthly
+        val picker_addon_interval = if (
+            picker_addon != null && effective_addon_interval == "year" && (picker_addon.yearly_price_cents ?: 0) > 0
+        ) {
+            "year"
+        } else {
+            "month"
+        }
+        val picker_amount_cents = picker_addon?.let { addon ->
+            if (picker_addon_interval == "year") addon.yearly_price_cents else addon.price_cents
+        } ?: if (picker_yearly_selected) picker_yearly else picker_monthly
         val picker_save_cents = if (
             picker_addon == null && picker_yearly_selected && picker_monthly != null && picker_yearly != null
         ) {
@@ -1351,7 +1367,7 @@ fun SubscriptionsScreen(
                 ?: picker_addon?.name
                 ?: stringResource(R.string.storage_addons_title),
             interval_label = picker_addon?.let {
-                org.astermail.android.billing.billing_interval_per_label(context, it.billing_period)
+                org.astermail.android.billing.billing_interval_per_label(context, picker_addon_interval)
             } ?: picker_tier?.let {
                 org.astermail.android.billing.billing_interval_per_label(context, billing_interval)
             },
@@ -1374,7 +1390,7 @@ fun SubscriptionsScreen(
                     show_crypto_terms = true
                 } else {
                     pending_plan_code?.let { billing_vm.start_checkout(it, billing_interval, detected_currency) }
-                        ?: pending_addon_id?.let { billing_vm.purchase_storage_addon(it, addon_interval) }
+                        ?: pending_addon_id?.let { billing_vm.purchase_storage_addon(it, effective_addon_interval) }
                 }
             },
         )

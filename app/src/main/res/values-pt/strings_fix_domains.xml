@@ -13,7 +13,7 @@
     <string name="domain_purchase_results_for">Resultados para %1$s</string>
     <string name="domain_purchase_change_name">Alterar nome</string>
     <string name="domain_purchase_show_more">Mostrar mais resultados</string>
-    <string name="domain_purchase_empty_included">Todos os domínios incluem privacidade WHOIS, DNS configurado automaticamente e endereços ilimitados.</string>
+    <string name="domain_purchase_empty_included">Todos os domínios incluem privacidade WHOIS e DNS configurado automaticamente.</string>
     <string name="domain_purchase_retry">Tentar novamente</string>
     <string name="domain_purchase_progress_note">O Aster Mail está a registar o seu domínio e a configurar as suas caixas de correio. Normalmente, isto demora cerca de um minuto.</string>
     <string name="domain_purchase_awaiting_note">O seu pagamento ainda não chegou. Para concluir a encomenda, termine o pagamento. Também pode fechar esta janela e pagar mais tarde em Domínios comprados.</string>
@@ -34,9 +34,9 @@
     <string name="domain_bimi_state_pending">A aguardar DNS</string>
     <string name="domain_bimi_state_live">Ativo</string>
     <string name="domain_bimi_state_attention">Requer atenção</string>
-    <string name="domain_bimi_state_external">Gerenciado em outro lugar</string>
+    <string name="domain_bimi_state_external">Gerido noutro local</string>
     <string name="domain_bimi_set_up">Configurar</string>
-    <string name="domain_bimi_manage">Gerenciar</string>
+    <string name="domain_bimi_manage">Gerir</string>
     <string name="domain_bimi_step_logo">Logotipo</string>
     <string name="domain_bimi_step_publish">Publicar</string>
     <string name="domain_bimi_step_of">Etapa %1$d de %2$d</string>

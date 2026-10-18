@@ -107,7 +107,6 @@ class RatchetEncryptor @Inject constructor(
     private val keys_api: KeysApi,
     private val identity_pins: RatchetIdentityPinStore,
 ) {
-
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -208,7 +207,7 @@ class RatchetEncryptor @Inject constructor(
         username: String,
         recipient_email: String,
         bundle: PrekeyBundleResponse,
-    ) {
+    ): Boolean {
         val pinned_owner = identity_pins.owner_key_pin(recipient_email)?.takeIf { it.isNotBlank() }
         val signature = bundle.signed_prekey_signature
         val signed = PrekeyBindingVerifier.is_pgp_signature(signature)
@@ -216,14 +215,14 @@ class RatchetEncryptor @Inject constructor(
             if (BuildConfig.DEBUG) {
                 android.util.Log.w("AsterRatchet", "prekey bundle carries a legacy unsigned binding")
             }
-            return
+            return false
         }
 
         val verifying_key = fetch_verifying_key(username, recipient_email)
-        val result = when {
-            !signed -> PrekeyBindingResult.UNSIGNED_LEGACY
-            verifying_key == null -> PrekeyBindingResult.UNVERIFIABLE
-            else -> PrekeyBindingVerifier.verify(
+        val verdict = when {
+            !signed -> PrekeyBindingVerdict(PrekeyBindingResult.UNSIGNED_LEGACY, false)
+            verifying_key == null -> PrekeyBindingVerdict(PrekeyBindingResult.UNVERIFIABLE, false)
+            else -> PrekeyBindingVerifier.verify_binding(
                 signature_block = signature,
                 recipient_public_key_armored = verifying_key,
                 kem_identity_key_b64 = bundle.kem_identity_key,
@@ -231,6 +230,7 @@ class RatchetEncryptor @Inject constructor(
                 pq_identity_key_b64 = bundle.pq_kem_public_key,
             )
         }
+        val result = verdict.result
         val served_owner = PrekeyBindingVerifier.owner_fingerprint(verifying_key)
 
         when (RatchetIdentityPinRules.decide_owner_key(pinned_owner, served_owner, result)) {
@@ -273,6 +273,7 @@ class RatchetEncryptor @Inject constructor(
                 )
             }
         }
+        return verdict.covers_pq_identity
     }
 
     private suspend fun verify_identity_pin(
@@ -352,10 +353,6 @@ class RatchetEncryptor @Inject constructor(
 
         var bundle: PrekeyBundleResponse? = null
 
-        // Reuse an existing session only if neither party rotated identities
-        // since it was bootstrapped. Sessions created before identity tracking
-        // (null sender/recipient identity) are refreshed once. If the current
-        // bundle cannot be fetched, keep the session rather than failing the send.
         if (state != null) {
             val boot = state.bootstrap!!
             val sender_changed = boot.sender_identity_key != sender_identity_public
@@ -380,6 +377,7 @@ class RatchetEncryptor @Inject constructor(
         var ephemeral_b64: String? = null
         var pq_ciphertext_b64: String? = null
         var pq_key_id: Int? = null
+        var x3dh_version: Int? = null
 
         if (state == null) {
             val resolved_bundle = (bundle ?: try {
@@ -394,7 +392,8 @@ class RatchetEncryptor @Inject constructor(
                 return null
             }
 
-            verify_prekey_binding(conversation_id, username, recipient_email, resolved_bundle)
+            val signature_covers_pq_identity =
+                verify_prekey_binding(conversation_id, username, recipient_email, resolved_bundle)
             verify_identity_pin(conversation_id, recipient_email, resolved_bundle)
 
             bundle = resolved_bundle
@@ -414,6 +413,8 @@ class RatchetEncryptor @Inject constructor(
                 recipient_signed_prekey_raw = recipient_spk_raw,
                 recipient_pq_prekey = pq_prekey_pair,
                 recipient_pq_identity = pq_identity_raw,
+                signature_covers_pq_identity = signature_covers_pq_identity,
+                x3dh_version = X3dh.negotiated_sender_version(resolved_bundle.x3dh_max_version),
             )
 
             try {
@@ -427,6 +428,7 @@ class RatchetEncryptor @Inject constructor(
                     pq_ciphertext_b64 = RatchetCrypto.b64_encode(x3dh_result.pq_ciphertext!!)
                     pq_key_id = x3dh_result.pq_key_id
                 }
+                x3dh_version = x3dh_result.x3dh_version.takeIf { it > X3dh.VERSION_LEGACY }
                 state.bootstrap = BootstrapData(
                     ephemeral_key = ephemeral_b64!!,
                     pq_ciphertext = pq_ciphertext_b64,
@@ -434,6 +436,7 @@ class RatchetEncryptor @Inject constructor(
                     sender_identity_key = sender_identity_public,
                     recipient_identity_key = resolved_bundle.kem_identity_key,
                     recipient_pq_identity_key = resolved_bundle.pq_kem_public_key,
+                    x3dh_version = x3dh_version,
                 )
             } finally {
                 x3dh_result.shared_secret.fill(0)
@@ -443,6 +446,7 @@ class RatchetEncryptor @Inject constructor(
             ephemeral_b64 = boot.ephemeral_key
             pq_ciphertext_b64 = boot.pq_ciphertext
             pq_key_id = boot.pq_key_id
+            x3dh_version = boot.x3dh_version
         }
 
         val recovery_keys = resolve_recovery_lane_keys(bundle, state.bootstrap)
@@ -475,6 +479,7 @@ class RatchetEncryptor @Inject constructor(
             nonce = RatchetCrypto.b64_encode(encrypted.nonce),
             pq_ciphertext = pq_ciphertext_b64,
             pq_key_id = pq_key_id,
+            x3dh_v = x3dh_version,
             recovery = RecoveryLaneData(
                 v = recovery.v,
                 epk = recovery.epk,
