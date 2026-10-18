@@ -40,6 +40,14 @@ class SendGatesTest {
     }
 
     @Test
+    fun `latest schedule instant is the last one the window allows`() {
+        val latest = latest_sealed_schedule_ms(now)
+        assertEquals(now + 28 * day, latest)
+        assertFalse(exceeds_sealed_schedule_window(latest, now))
+        assertTrue(exceeds_sealed_schedule_window(latest + 1, now))
+    }
+
+    @Test
     fun `schedule block checks the window first`() {
         val block = scheduled_send_block(
             recipients = listOf("a@astermail.org", "b@example.com"),
@@ -51,14 +59,26 @@ class SendGatesTest {
     }
 
     @Test
-    fun `schedule block rejects mixed recipients before require encryption`() {
+    fun `schedule block applies the encryption requirement to the outside half of a mixed schedule`() {
         val block = scheduled_send_block(
             recipients = listOf("a@astermail.org", "b@example.com"),
             scheduled_at_ms = now + day,
             now_ms = now,
             require_encryption = true,
         )
-        assertEquals(ScheduledSendBlock.MIXED_RECIPIENTS, block)
+        assertEquals(ScheduledSendBlock.REQUIRES_ENCRYPTION, block)
+    }
+
+    @Test
+    fun `schedule block allows mixed recipients without the encryption requirement`() {
+        assertNull(
+            scheduled_send_block(
+                recipients = listOf("a@astermail.org", "b@example.com"),
+                scheduled_at_ms = now + day,
+                now_ms = now,
+                require_encryption = false,
+            ),
+        )
     }
 
     @Test

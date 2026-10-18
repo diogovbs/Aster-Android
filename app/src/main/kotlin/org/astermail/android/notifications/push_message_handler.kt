@@ -23,6 +23,7 @@ package org.astermail.android.notifications
 
 import android.content.Context
 import dagger.hilt.android.EntryPointAccessors
+import org.astermail.android.mail.ReactionFrame
 import org.astermail.android.mail.safe_display_text
 import org.json.JSONObject
 
@@ -40,6 +41,64 @@ private fun sanitize_alert_field(raw: String): String {
     } else {
         collapsed
     }
+}
+
+private fun signal_mail_refresh(context: Context) {
+    runCatching {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            MailPollingWorker.MailRepositoryEntryPoint::class.java,
+        ).mail_repository().signal_new_mail()
+    }
+}
+
+fun handle_reaction_changed(context: Context, frame: ReactionFrame) {
+    signal_mail_refresh(context)
+    if (!frame.clears_unseen) return
+    MailPollingWorker.clear_reaction_notifications(
+        context,
+        frame.thread_token,
+        listOfNotNull(frame.target_mail_item_id),
+    )
+}
+
+fun handle_reaction_added(context: Context, frame: ReactionFrame): PushResult {
+    signal_mail_refresh(context)
+    if (MailPollingWorker.is_quiet_hours_now(context)) return PushResult.Ignore
+    if (
+        !MailPollingWorker.is_notify_new_email(context) &&
+        !MailPollingWorker.is_notify_replies(context)
+    ) {
+        return PushResult.Ignore
+    }
+    val target = frame.target_mail_item_id ?: return PushResult.NeedsFetch
+    val entry = try {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            MailPollingWorker.MailRepositoryEntryPoint::class.java,
+        )
+    } catch (_: Throwable) {
+        return PushResult.NeedsFetch
+    }
+    val app_lock_configured = runCatching { entry.app_lock_store().is_configured() }.getOrDefault(true)
+    val is_locked = org.astermail.android.security.LockdownStore.is_enabled(context) || app_lock_configured
+    if (!is_locked) {
+        if (!MailPollingWorker.protected_folder_state_known(context)) return PushResult.NeedsFetch
+        if (MailPollingWorker.protected_folder_tokens(context).isNotEmpty()) return PushResult.NeedsFetch
+        if (MailPollingWorker.muted_folder_tokens(context).isNotEmpty()) return PushResult.NeedsFetch
+        if (MailPollingWorker.muted_notification_categories(context).isNotEmpty()) return PushResult.NeedsFetch
+    }
+    val keys = listOf(
+        MailPollingWorker.reaction_claim_key(frame.thread_token, target),
+        MailPollingWorker.reaction_claim_key(null, target),
+    ).distinct()
+    val claimed = keys.map { MailPollingWorker.claim_item_notification(context, it) }
+    if (claimed.any { !it }) return PushResult.Ignore
+    if (!MailPollingWorker.show_reaction(context, target, opens_target = !is_locked)) {
+        keys.forEach { MailPollingWorker.release_item_notification(context, it) }
+        return PushResult.Ignore
+    }
+    return PushResult.Shown
 }
 
 fun handle_push_payload(context: Context, payload: String): PushResult {
@@ -90,6 +149,14 @@ fun handle_push_payload(context: Context, payload: String): PushResult {
     }
     val app_lock_configured = runCatching { entry.app_lock_store().is_configured() }.getOrDefault(true)
     if (org.astermail.android.security.LockdownStore.is_enabled(context) || app_lock_configured) {
+        if (
+            MailPollingWorker.locked_push_needs_fetch(
+                MailPollingWorker.muted_notification_categories(context),
+                MailPollingWorker.muted_folder_tokens(context),
+            )
+        ) {
+            return PushResult.NeedsFetch
+        }
         if (MailPollingWorker.show_generic(context, 1)) {
             MailPollingWorker.note_push_notification_posted(context)
         }
@@ -137,11 +204,15 @@ fun handle_push_payload(context: Context, payload: String): PushResult {
         envelope.from_email,
         envelope.raw_headers,
     )
-    val sender = safe_display_text(
-        forwarding?.display_sender_name
-            ?: envelope.from_name.takeIf { it.isNotBlank() }
-            ?: envelope.from_email,
+    val shown_email = forwarding?.display_sender_email ?: envelope.from_email
+    val trust_context = org.astermail.android.security.SenderTrustStore.context.value
+    val shown_name = org.astermail.android.security.notification_sender_name(
+        forwarding?.display_sender_name ?: envelope.from_name,
+        shown_email,
+        trust_context.own_addresses,
+        trust_context.contacts,
     )
+    val sender = safe_display_text(shown_name.ifBlank { shown_email })
     val subject = safe_display_text(envelope.subject)
     if (sender.isBlank() || subject.isBlank()) return PushResult.NeedsFetch
     val notification_id = if (item_id.isNotBlank()) {
