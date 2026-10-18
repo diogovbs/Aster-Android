@@ -1,0 +1,15 @@
+What's new:
+
+- Pinch to zoom images and PDFs in attachments.
+- Swipe from the screen edge to open the side menu.
+- Drag the scroll bar in long messages and lists.
+- Reply from your catch-all address on paid plans.
+
+Fixed:
+
+- Some messages no longer scroll into endless blank space.
+- Bulk actions apply to every selected message.
+- Creating an alias no longer freezes your phone.
+- Text you write stays readable on dark themes.
+- Less battery use in the background.
+- Fewer crashes.

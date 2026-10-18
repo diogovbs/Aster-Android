@@ -41,7 +41,22 @@ private val NON_CONTENT_TAGS = setOf("script", "style", "template")
 
 private val LINKIFY_SKIP_TAGS = setOf("a", "script", "style", "textarea", "code", "pre", "button")
 
+private val LONG_TOKEN_SKIP_TAGS = setOf("textarea", "code", "pre", "kbd", "samp")
+
+private val LONG_TOKEN = Regex("""\S{30,}""")
+
 private val MEDIA_TAGS = setOf("img", "video", "picture")
+
+internal const val WRAP_BUTTON_LABEL_ATTRIBUTE = "data-aster-wrap-label"
+
+private const val WRAP_BUTTON_LABEL_WIDTH = 296f
+
+private const val DEFAULT_FONT_PX = 16f
+
+private const val LABEL_CHARACTER_EM = 0.62f
+
+private val INLINE_FONT_SIZE =
+    Regex("""(?:^|;)\s*font-size\s*:\s*(\d+(?:\.\d+)?)\s*(px|pt|em|rem|%)""", RegexOption.IGNORE_CASE)
 
 private val BLANK_SPACER_TAGS = setOf("div", "p", "span")
 
@@ -60,8 +75,6 @@ private val TRAILING_PUNCTUATION = setOf('.', ',', ':', ';', '!', '?', '\'', '"'
 private val BRACKET_OPENERS = mapOf(')' to '(', ']' to '[', '}' to '{')
 
 private val HTML_ENTITY_TAIL = Regex("&#?[A-Za-z0-9]+;$")
-
-private val WROTE_MARKER = Regex("(^|[\\s> ])(On\\s[^\\n]{1,200}?\\bwrote\\s*:)", RegexOption.IGNORE_CASE)
 
 private val WATERMARK_MARKER = Regex("(^|[\\s> ])(Secured by Aster Mail)", RegexOption.IGNORE_CASE)
 
@@ -153,6 +166,8 @@ internal fun prepare_email_body(
     val doc = Jsoup.parseBodyFragment(body).apply { outputSettings(raw_body_output_settings()) }
     val root = doc.body()
     linkify_text_nodes(root)
+    if (!is_newsletter) mark_long_tokens(root)
+    mark_wide_button_labels(root)
     relax_fixed_heights(root)
     if (is_newsletter) pad_loose_blocks(root)
     if (simple_dark) repair_dark_text_contrast(root)
@@ -206,6 +221,18 @@ private val HIDING_DECLARATION = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+private val SUBTREE_HIDING_DECLARATION = Regex(
+    """(?<![a-z-])(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)|""" +
+        """opacity\s*:\s*0(?:\.0+)?(?![.\d])|""" +
+        """max-height\s*:\s*0(?:\.0+)?(?:px|pt|em|rem|%)?(?![.\d]))""",
+    RegexOption.IGNORE_CASE,
+)
+
+private val ZERO_FONT_SIZE =
+    Regex("""(?<![a-z-])font-size\s*:\s*0(?:\.0+)?(?:px|pt|em|rem|%)?(?![.\d])""", RegexOption.IGNORE_CASE)
+
+private val FONT_SIZE_DECLARATION = Regex("""(?<![a-z-])font-size\s*:""", RegexOption.IGNORE_CASE)
+
 private val CSS_COMMENT = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL)
 
 private val CSS_RULE = Regex("""([^{}@]+)\{([^{}]*)\}""")
@@ -257,6 +284,25 @@ private fun stylesheet_hidden_elements(root: Element): List<Element> {
         .toList()
 }
 
+private fun is_hidden(node: Node, sheet_hidden: List<Element>, is_text: Boolean): Boolean {
+    var sized = false
+    var current: Node? = node
+    while (current != null) {
+        if (current is Element) {
+            if (sheet_hidden.any { it === current }) return true
+            val style = current.attr("style")
+            if (SUBTREE_HIDING_DECLARATION.containsMatchIn(style)) return true
+            if (ZERO_FONT_SIZE.containsMatchIn(style)) {
+                if (is_text && !sized) return true
+            } else if (FONT_SIZE_DECLARATION.containsMatchIn(style)) {
+                sized = true
+            }
+        }
+        current = current.parentNode()
+    }
+    return false
+}
+
 private fun reveal_fully_hidden_content(root: Element) {
     val inline_hidden = root.select("[style]").filter { HIDING_DECLARATION.containsMatchIn(it.attr("style")) }
     val sheet_hidden = stylesheet_hidden_elements(root)
@@ -264,9 +310,9 @@ private fun reveal_fully_hidden_content(root: Element) {
     if (hidden.isEmpty()) return
     val texts = collect_text_nodes(root).filter { it.wholeText.replace(INVISIBLE_CHARACTERS, "").isNotBlank() }
     if (texts.isEmpty()) return
-    if (texts.any { !is_within(it, hidden) }) return
+    if (texts.any { !is_hidden(it, sheet_hidden, is_text = true) }) return
     val visible_media = root.select("img, video, picture, svg, canvas")
-        .any { !is_within(it, hidden) && !(it.tagName().lowercase() == "img" && is_tracking_pixel(it)) }
+        .any { !is_hidden(it, sheet_hidden, is_text = false) && !(it.tagName().lowercase() == "img" && is_tracking_pixel(it)) }
     if (visible_media) return
     for (element in inline_hidden) {
         val style = HIDING_DECLARATION.replace(element.attr("style"), "").trim()
@@ -382,10 +428,12 @@ private fun collect_text_nodes(root: Element): List<TextNode> {
     return out
 }
 
-private fun linkify_skipped(node: Node, root: Element): Boolean {
+private fun linkify_skipped(node: Node, root: Element): Boolean = inside_tags(node, root, LINKIFY_SKIP_TAGS)
+
+private fun inside_tags(node: Node, root: Element, tags: Set<String>): Boolean {
     var parent = node.parentNode()
     while (parent != null && parent !== root) {
-        if (parent is Element && parent.tagName().lowercase() in LINKIFY_SKIP_TAGS) return true
+        if (parent is Element && parent.tagName().lowercase() in tags) return true
         parent = parent.parentNode()
     }
     return false
@@ -414,6 +462,53 @@ private fun linkify_text_nodes(root: Element) {
         if (last < source.length) replacements.add(TextNode(source.substring(last)))
         node.remove()
         parent.insertChildren(index, replacements)
+    }
+}
+
+private fun mark_long_tokens(root: Element) {
+    val targets = collect_text_nodes(root).filter {
+        LONG_TOKEN.containsMatchIn(it.wholeText) && !inside_tags(it, root, LONG_TOKEN_SKIP_TAGS)
+    }
+    for (node in targets) {
+        val source = node.wholeText
+        val parent = node.parentNode() as? Element ?: continue
+        val index = node.siblingIndex()
+        val replacements = mutableListOf<Node>()
+        var last = 0
+        for (token in LONG_TOKEN.findAll(source)) {
+            if (token.range.first > last) replacements.add(TextNode(source.substring(last, token.range.first)))
+            val span = Element("span")
+            span.attr("data-aster-long-token", "")
+            span.appendChild(TextNode(token.value))
+            replacements.add(span)
+            last = token.range.last + 1
+        }
+        if (last < source.length) replacements.add(TextNode(source.substring(last)))
+        node.remove()
+        parent.insertChildren(index, replacements)
+    }
+}
+
+private fun inline_font_px(element: Element?): Float {
+    if (element == null) return DEFAULT_FONT_PX
+    val match = INLINE_FONT_SIZE.findAll(element.attr("style")).lastOrNull()
+        ?: return inline_font_px(element.parent())
+    val value = match.groupValues[1].toFloatOrNull() ?: return inline_font_px(element.parent())
+    return when (match.groupValues[2].lowercase()) {
+        "px" -> value
+        "pt" -> value * 4f / 3f
+        "rem" -> value * DEFAULT_FONT_PX
+        "em" -> value * inline_font_px(element.parent())
+        else -> value / 100f * inline_font_px(element.parent())
+    }
+}
+
+private fun estimated_label_width(anchor: Element): Float =
+    anchor.text().trim().length * inline_font_px(anchor) * LABEL_CHARACTER_EM
+
+private fun mark_wide_button_labels(root: Element) {
+    for (anchor in root.select("a.aster-email-button")) {
+        if (estimated_label_width(anchor) > WRAP_BUTTON_LABEL_WIDTH) anchor.attr(WRAP_BUTTON_LABEL_ATTRIBUTE, "")
     }
 }
 
@@ -760,6 +855,11 @@ private fun block_ancestor(node: Node, root: Element): Node {
 }
 
 private fun collapse_by_text_marker(root: Element) {
+    collapse_by_watermark(root)
+    if (!already_collapsed(root)) collapse_by_quote_lines(root)
+}
+
+private fun collapse_by_watermark(root: Element) {
     val runs = mutableListOf<Pair<TextNode, Int>>()
     val joined = StringBuilder()
     var previous_block: Node? = null
@@ -788,17 +888,8 @@ private fun collapse_by_text_marker(root: Element) {
     walk(root)
 
     val text = joined.toString()
-    val watermark = WATERMARK_MARKER.find(text)
-    val hit: Int
-    val watermark_marker: Boolean
-    if (watermark != null) {
-        hit = watermark.range.first + watermark.groupValues[1].length
-        watermark_marker = true
-    } else {
-        val wrote = WROTE_MARKER.find(text) ?: return
-        hit = wrote.range.first + wrote.groupValues[1].length
-        watermark_marker = false
-    }
+    val watermark = WATERMARK_MARKER.find(text) ?: return
+    val hit = watermark.range.first + watermark.groupValues[1].length
 
     var marker: TextNode? = null
     for ((node, start) in runs) {
@@ -842,9 +933,7 @@ private fun collapse_by_text_marker(root: Element) {
         }
     }
     val kept = text.substring(0, hit).replace(WHITESPACE_RUN, " ").trim()
-    val has_signature = QUOTE_SIGNATURE.containsMatchIn(collected_text)
-    val size_ok = !watermark_marker && collected_text.replace(WHITESPACE_RUN, " ").trim().length > 60
-    if (kept.isEmpty() || !(has_signature || size_ok)) return
+    if (kept.isEmpty() || !QUOTE_SIGNATURE.containsMatchIn(collected_text)) return
 
     val details = quote_details(forwarded = false, label = QUOTE_TOGGLE_LABEL)
     val content = quote_content(details)
@@ -853,6 +942,333 @@ private fun collapse_by_text_marker(root: Element) {
         node.remove()
         content.appendChild(node)
     }
+    trim_blank_nodes_before(details)
+}
+
+private val LINE_BLOCK_TAGS = setOf(
+    "address", "article", "aside", "blockquote", "body", "center", "dd", "details", "div", "dl", "dt",
+    "fieldset", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li",
+    "main", "nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th",
+    "thead", "tr", "ul",
+)
+
+private val SKIPPED_LINE_TAGS = setOf("style", "script", "template", "noscript", "title")
+
+private val INLINE_LINE_TAGS = setOf("a", "b", "i", "u", "em", "strong", "font", "small", "code", "span")
+
+private val CELL_TAGS = setOf("td", "th")
+
+private class QuoteLine(val first: TextNode, var last: TextNode, val block: Node) {
+    val raw = StringBuilder()
+    var text = ""
+}
+
+private fun nearest_line_block(node: Node, root: Element): Node {
+    var current = node.parentNode()
+    while (current != null && current !== root) {
+        if (current is Element && current.tagName().lowercase() in LINE_BLOCK_TAGS) return current
+        current = current.parentNode()
+    }
+    return root
+}
+
+private fun collect_quote_lines(root: Element): List<QuoteLine> {
+    val lines = mutableListOf<QuoteLine>()
+    var current: QuoteLine? = null
+
+    fun flush() {
+        val line = current ?: return
+        line.text = normalize_quote_line(line.raw.toString())
+        lines.add(line)
+        current = null
+    }
+
+    fun walk(node: Node) {
+        for (child in node.childNodes()) {
+            if (child is Element) {
+                val tag = child.tagName().lowercase()
+                if (tag in SKIPPED_LINE_TAGS) continue
+                if (tag == "br" || tag in LINE_BLOCK_TAGS) flush()
+                walk(child)
+            } else if (child is TextNode) {
+                val value = child.wholeText
+                val block = nearest_line_block(child, root)
+                if (current?.block.let { it != null && it !== block }) flush()
+                val line = current
+                if (line == null) {
+                    if (value.isBlank()) continue
+                    current = QuoteLine(child, child, block).also { it.raw.append(value) }
+                } else {
+                    line.last = child
+                    line.raw.append(value)
+                }
+            }
+        }
+    }
+    walk(root)
+    flush()
+    return lines
+}
+
+private fun node_has_media(node: Node): Boolean =
+    node is Element && (node.tagName().lowercase() in MEDIA_TAGS || node.selectFirst("img, video, picture") != null)
+
+private fun node_text(node: Node): String = when (node) {
+    is TextNode -> node.wholeText
+    is Element -> node.text()
+    else -> ""
+}
+
+private fun is_meaningful(node: Node): Boolean = node_text(node).isNotBlank() || node_has_media(node)
+
+private fun is_separator_node(node: Node): Boolean {
+    if (node !is Element) return false
+    if (node.tagName().equals("hr", ignoreCase = true)) return true
+    return is_separator_text(normalize_quote_line(node.text()))
+}
+
+private fun previous_meaningful_sibling(node: Node): Node? {
+    var previous = node.previousSibling()
+    while (previous != null && !is_meaningful(previous) && !is_separator_node(previous)) {
+        previous = previous.previousSibling()
+    }
+    return previous
+}
+
+private fun line_top(node: Node): Node {
+    var top = node
+    while (true) {
+        val parent = top.parentNode() as? Element ?: break
+        if (parent.tagName().lowercase() !in INLINE_LINE_TAGS || top.previousSibling() != null) break
+        top = parent
+    }
+    return top
+}
+
+private fun line_top_end(node: Node): Node {
+    var top = node
+    while (true) {
+        val parent = top.parentNode() as? Element ?: break
+        if (parent.tagName().lowercase() !in INLINE_LINE_TAGS || top.nextSibling() != null) break
+        top = parent
+    }
+    return top
+}
+
+private fun quote_start_node(root: Element, first: Node): Node {
+    var node = line_top(first)
+    while (true) {
+        val parent = node.parentNode() ?: break
+        if (parent === root) break
+        if (parent is Element && parent.tagName().lowercase() in CELL_TAGS) break
+        if (previous_meaningful_sibling(node) != null) break
+        node = parent
+    }
+    val previous = previous_meaningful_sibling(node)
+    return if (previous != null && is_separator_node(previous)) previous else node
+}
+
+private fun nodes_in_order(root: Element): List<Node> {
+    val out = mutableListOf<Node>()
+    fun walk(node: Node) {
+        for (child in node.childNodes()) {
+            out.add(child)
+            walk(child)
+        }
+    }
+    walk(root)
+    return out
+}
+
+private fun has_media_before_node(root: Element, node: Node): Boolean {
+    for (current in nodes_in_order(root)) {
+        if (is_within(current, listOf(node))) return false
+        if (current is Element && current.tagName().lowercase() in MEDIA_TAGS) return true
+    }
+    return false
+}
+
+private fun has_content_after_node(root: Element, node: Node): Boolean {
+    var past = false
+    for (current in nodes_in_order(root)) {
+        if (!past) {
+            if (current === node) past = true
+            continue
+        }
+        if (is_within(current, listOf(node))) continue
+        if (current is TextNode && current.wholeText.isNotBlank()) return true
+        if (current is Element && current.tagName().lowercase() in MEDIA_TAGS) return true
+    }
+    return false
+}
+
+private fun shallow_copy(element: Element): Element = element.shallowClone().also { it.removeAttr("id") }
+
+private fun following_siblings(node: Node): List<Node> {
+    val out = mutableListOf<Node>()
+    var sibling = node.nextSibling()
+    while (sibling != null) {
+        out.add(sibling)
+        sibling = sibling.nextSibling()
+    }
+    return out
+}
+
+private fun split_before(node: Node, scope: Node): Node {
+    var current = node
+    while (true) {
+        val parent = current.parentNode() ?: break
+        if (parent === scope) break
+        if (current.previousSibling() != null && parent.parentNode() != null && parent is Element) {
+            val clone = shallow_copy(parent)
+            val moving = listOf(current) + following_siblings(current)
+            parent.after(clone)
+            for (item in moving) clone.appendChild(item)
+            current = clone
+        } else {
+            current = parent
+        }
+    }
+    return current
+}
+
+private fun split_after(node: Node, scope: Node): Node {
+    var current = node
+    while (true) {
+        val parent = current.parentNode() ?: break
+        if (parent === scope) break
+        if (current.nextSibling() != null && parent.parentNode() != null && parent is Element) {
+            val clone = shallow_copy(parent)
+            val moving = following_siblings(current)
+            parent.after(clone)
+            for (item in moving) clone.appendChild(item)
+        }
+        current = parent
+    }
+    return current
+}
+
+private fun is_edge_break(node: Node): Boolean =
+    (node is Element && node.tagName().equals("br", ignoreCase = true)) ||
+        (node is TextNode && node.wholeText.isBlank())
+
+private fun trim_edge_breaks(node: Node?, at_end: Boolean) {
+    var element: Node? = node
+    var depth = 0
+    while (element != null && depth < 4) {
+        if (element !is Element) return
+        var edge: Node? = if (at_end) element.lastChild() else element.firstChild()
+        while (edge != null && is_edge_break(edge)) {
+            val next = if (at_end) edge.previousSibling() else edge.nextSibling()
+            edge.remove()
+            edge = next
+        }
+        element = edge
+        depth++
+    }
+}
+
+private fun wrap_in_quote_details(nodes: List<Node>, insert_before: Node?, parent: Element): Element {
+    val details = quote_details(forwarded = false, label = QUOTE_TOGGLE_LABEL)
+    if (insert_before != null) insert_before.before(details) else parent.appendChild(details)
+    val content = quote_content(details)
+    for (node in nodes) content.appendChild(node)
+    return details
+}
+
+private val LINE_FEED = Regex("\r?\n")
+
+private fun break_preformatted_lines(root: Element) {
+    for (pre in root.select("pre")) {
+        val targets = mutableListOf<TextNode>()
+        fun gather(node: Node) {
+            for (child in node.childNodes()) {
+                if (child is TextNode && child.wholeText.contains('\n')) targets.add(child)
+                else if (child is Element) gather(child)
+            }
+        }
+        gather(pre)
+        for (node in targets) {
+            val parts = node.wholeText.split(LINE_FEED)
+            var anchor: Node = node
+            parts.forEachIndexed { index, part ->
+                if (index > 0) {
+                    val br = Element("br")
+                    anchor.after(br)
+                    anchor = br
+                }
+                if (part.isNotEmpty()) {
+                    val text = TextNode(part)
+                    anchor.after(text)
+                    anchor = text
+                }
+            }
+            node.remove()
+        }
+    }
+}
+
+private fun collapse_by_quote_lines(root: Element) {
+    break_preformatted_lines(root)
+    val lines = collect_quote_lines(root)
+    val texts = lines.map { it.text }
+    val found = find_quote_start(texts) ?: find_trailing_quote(texts) ?: return
+    val quote_end = resolve_quote_end(texts, found.body_from) ?: return
+
+    val start_node = quote_start_node(root, lines[found.start].first)
+    val end_node: Node? = if (quote_end.to_end) null else lines[quote_end.end].last
+    val start_element = start_node as? Element ?: start_node.parentNode() as? Element
+    val scope: Element = start_element?.closest("td, th") ?: root
+    if (scope.childNodeSize() == 0) return
+
+    val content_before = has_reply_text_before(texts, found.start) || has_media_before_node(root, start_node)
+
+    if (!content_before) {
+        if (end_node != null) {
+            if (!has_content_after_node(root, end_node)) return
+        } else {
+            val to_collapse = mutableListOf(start_node)
+            var sibling = start_node.nextSibling()
+            while (sibling != null) {
+                val tag = (sibling as? Element)?.tagName()?.lowercase()
+                if (tag != "blockquote" && node_text(sibling).isNotBlank()) break
+                to_collapse.add(sibling)
+                sibling = sibling.nextSibling()
+            }
+            val outside = lines.any { !is_boilerplate_text(it.text) && !is_within(it.first, to_collapse) } ||
+                root.select("img, video, picture").any { !is_within(it, to_collapse) }
+            if (!outside) return
+            val parent = start_node.parentNode() as? Element ?: return
+            val details = wrap_in_quote_details(to_collapse.toList(), start_node, parent)
+            hoist_trailing_signature(details)
+            trim_blank_nodes_before(details)
+            return
+        }
+    }
+
+    if (end_node != null && !is_within(end_node, listOf(scope))) return
+
+    val first_top = split_before(start_node, scope)
+    val last_top = if (end_node != null) {
+        split_after(line_top_end(end_node), scope)
+    } else {
+        scope.childNode(scope.childNodeSize() - 1)
+    }
+    if (first_top.parentNode() !== scope || last_top.parentNode() !== scope) return
+    if (first_top.siblingIndex() > last_top.siblingIndex()) return
+
+    val moving = mutableListOf<Node>()
+    var cursor: Node? = first_top
+    while (cursor != null) {
+        moving.add(cursor)
+        if (cursor === last_top) break
+        cursor = cursor.nextSibling()
+    }
+    val anchor = last_top.nextSibling()
+    val details = wrap_in_quote_details(moving, anchor, scope)
+    hoist_trailing_signature(details)
+    trim_edge_breaks(details.previousSibling(), true)
+    trim_edge_breaks(details.nextSibling(), false)
     trim_blank_nodes_before(details)
 }
 
