@@ -47,6 +47,8 @@ private const val PAGE_SURFACE_LUMINANCE_LIMIT = 0.5
 
 internal const val KEEP_BACKGROUND_ATTRIBUTE = "data-aster-keep-bg"
 
+internal const val BACKGROUND_IMAGE_ATTRIBUTE = "data-aster-bg-image"
+
 private val NAMED_COLOR_LUMINANCE: Map<String, Double> = mapOf(
     "black" to 0.0, "navy" to 0.0018, "darkblue" to 0.0043, "midnightblue" to 0.0083,
     "darkgreen" to 0.0356, "darkslategray" to 0.0339, "darkslategrey" to 0.0339,
@@ -57,6 +59,14 @@ private val NAMED_COLOR_LUMINANCE: Map<String, Double> = mapOf(
     "olive" to 0.1637, "green" to 0.1544, "slategray" to 0.2079, "slategrey" to 0.2079,
 )
 
+private val LIGHT_NAMED_COLOR_LUMINANCE: Map<String, Double> = mapOf(
+    "white" to 1.0, "snow" to 0.9647, "ghostwhite" to 0.9486, "whitesmoke" to 0.9131,
+    "ivory" to 0.9922, "floralwhite" to 0.9636, "seashell" to 0.9466, "oldlace" to 0.9306,
+    "linen" to 0.9113, "cornsilk" to 0.9471, "beige" to 0.9157, "lightyellow" to 0.9867,
+    "honeydew" to 0.9643, "mintcream" to 0.9773, "azure" to 0.9775, "aliceblue" to 0.9289,
+    "lavenderblush" to 0.9297, "gainsboro" to 0.7157, "lightgray" to 0.6518, "lightgrey" to 0.6518,
+)
+
 private val COLOR_DECLARATION =
     Regex("(?<![-a-z])color\\s*:\\s*([^;}\"'<]+)", RegexOption.IGNORE_CASE)
 private val STYLE_RULE_BODY = Regex("\\{([^{}]*)\\}")
@@ -64,6 +74,21 @@ private val BACKGROUND_COLOR_DECLARATION =
     Regex("background(?:-color)?\\s*:\\s*([^;}\"'<]+)", RegexOption.IGNORE_CASE)
 private val BACKGROUND_IMAGE_DECLARATION =
     Regex("background(?:-image)?\\s*:[^;}\"'<]*url\\s*\\(", RegexOption.IGNORE_CASE)
+private val BACKGROUND_IMAGE_VALUE =
+    Regex("background-image\\s*:\\s*([^;}\"'<]*)", RegexOption.IGNORE_CASE)
+private val NO_BACKGROUND_IMAGE =
+    Regex("^(?:none|initial|unset|inherit|revert|revert-layer)?$", RegexOption.IGNORE_CASE)
+private val IMPORTANT_FLAG = Regex("!\\s*important", RegexOption.IGNORE_CASE)
+private val STYLE_RULE = Regex("([^{}]+)\\{([^{}]*)\\}")
+private val BACKGROUND_SOURCE = Regex(
+    "background(?:-color)?\\s*:\\s*([^;}\"'<]+)|bgcolor\\s*=\\s*[\"']?([^\"'\\s>]+)",
+    RegexOption.IGNORE_CASE,
+)
+private val COLOR_TOKEN = Regex(
+    "#[0-9a-f]{3,8}\\b|(?:rgb|hsl)a?\\([^)]*\\)|(?<![-\\w])(?:" +
+        LIGHT_NAMED_COLOR_LUMINANCE.keys.joinToString("|") + ")(?![-\\w])",
+    RegexOption.IGNORE_CASE,
+)
 
 private fun channel(value: Double): Double {
     val clamped = value.coerceIn(0.0, 1.0)
@@ -106,6 +131,7 @@ internal fun color_luminance(raw: String): Double? {
     val value = raw.trim().lowercase()
     if (value.isEmpty()) return null
     NAMED_COLOR_LUMINANCE[value]?.let { return it }
+    LIGHT_NAMED_COLOR_LUMINANCE[value]?.let { return it }
     if (value.startsWith("#")) {
         val hex = value.drop(1)
         val expanded = when (hex.length) {
@@ -139,6 +165,39 @@ internal fun reads_too_dark_on_dark(raw: String): Boolean {
     return value < DARK_INK_LUMINANCE_LIMIT
 }
 
+internal fun declares_background_image(css: String): Boolean {
+    if (BACKGROUND_IMAGE_DECLARATION.containsMatchIn(css)) return true
+    return BACKGROUND_IMAGE_VALUE.findAll(css).any { match ->
+        !NO_BACKGROUND_IMAGE.matches(IMPORTANT_FLAG.replace(match.groupValues[1], "").trim())
+    }
+}
+
+private fun is_translucent(raw: String): Boolean {
+    val value = raw.trim().lowercase()
+    if (value.startsWith("#")) {
+        val hex = value.drop(1)
+        val alpha = when (hex.length) {
+            4 -> "${hex[3]}${hex[3]}"
+            8 -> hex.substring(6, 8)
+            else -> return false
+        }
+        return (alpha.toIntOrNull(16) ?: 255) < 128
+    }
+    val numbers = functional_components(value)
+    if (numbers.size < 4) return false
+    val alpha = if (numbers[3] > 1.0) numbers[3] / 100 else numbers[3]
+    return alpha < 0.5
+}
+
+private fun reads_as_light_surface(raw: String): Boolean =
+    !is_translucent(raw) && (raw.trim().equals("white", ignoreCase = true) || is_page_surface(raw))
+
+internal fun declares_light_background(body: String): Boolean =
+    BACKGROUND_SOURCE.findAll(body).any { match ->
+        val value = match.groupValues[1].ifEmpty { match.groupValues[2] }
+        COLOR_TOKEN.findAll(value).any { reads_as_light_surface(it.value) }
+    }
+
 internal fun is_page_surface(raw: String): Boolean {
     val value = color_luminance(raw) ?: return false
     return value >= PAGE_SURFACE_LUMINANCE_LIMIT
@@ -155,7 +214,7 @@ private fun declared_background(element: org.jsoup.nodes.Element): String? {
 }
 
 private fun lighten_color_declarations(css: String): String {
-    if (BACKGROUND_IMAGE_DECLARATION.containsMatchIn(css)) return css
+    if (declares_background_image(css)) return css
     return COLOR_DECLARATION.replace(css) { match ->
         val raw = match.groupValues[1].trim()
         val important = raw.lowercase().endsWith("!important")
@@ -168,10 +227,81 @@ private fun lighten_color_declarations(css: String): String {
     }
 }
 
+private fun clear_light_backgrounds(css: String): String {
+    if (declares_background_image(css)) return css
+    return BACKGROUND_COLOR_DECLARATION.replace(css) { match ->
+        val value = match.groups[1]!!
+        val cleared = COLOR_TOKEN.replace(value.value) { token ->
+            if (reads_as_light_surface(token.value)) "transparent" else token.value
+        }
+        if (cleared == value.value) {
+            match.value
+        } else {
+            match.value.substring(0, value.range.first - match.range.first) + cleared
+        }
+    }
+}
+
+private fun mark_stylesheet_background_images(doc: org.jsoup.nodes.Document, css: String): Boolean {
+    var marked = false
+    for (rule in STYLE_RULE.findAll(css)) {
+        if (!declares_background_image(rule.groupValues[2])) continue
+        for (part in rule.groupValues[1].split(',')) {
+            val selector = part.trim()
+            if (selector.isEmpty() || selector.startsWith("@") || selector.contains("::")) continue
+            val matches = try {
+                doc.body().select(selector)
+            } catch (_: org.jsoup.select.Selector.SelectorParseException) {
+                continue
+            }
+            for (element in matches) {
+                element.attr(BACKGROUND_IMAGE_ATTRIBUTE, "1")
+                marked = true
+            }
+        }
+    }
+    return marked
+}
+
+private fun lighten_style_blocks(
+    doc: org.jsoup.nodes.Document,
+    rewrite: (String) -> String = ::lighten_color_declarations,
+): Boolean {
+    var changed = false
+    for (element in doc.select("style")) {
+        val css = element.data()
+        val lightened = STYLE_RULE_BODY.replace(css) { rule ->
+            "{" + rewrite(rule.groupValues[1]) + "}"
+        }
+        if (lightened != css) {
+            element.empty()
+            element.appendChild(org.jsoup.nodes.DataNode(lightened))
+            changed = true
+        }
+    }
+    return changed
+}
+
+internal fun lighten_dark_stylesheet_text(body: String): String = try {
+    val doc = org.jsoup.Jsoup.parseBodyFragment(body)
+    doc.outputSettings(org.jsoup.nodes.Document.OutputSettings().prettyPrint(false))
+    if (lighten_style_blocks(doc)) doc.body().html() else body
+} catch (_: Throwable) {
+    body
+}
+
 internal fun lighten_dark_email_text(body: String): String = try {
     val doc = org.jsoup.Jsoup.parseBodyFragment(body)
     doc.outputSettings(org.jsoup.nodes.Document.OutputSettings().prettyPrint(false))
     var changed = false
+    for (element in doc.select("[style],[background]")) {
+        if (element.attr("background").isBlank() && !declares_background_image(element.attr("style"))) continue
+        element.attr(BACKGROUND_IMAGE_ATTRIBUTE, "1")
+        changed = true
+    }
+    for (sheet in doc.select("style")) {
+        if (mark_stylesheet_background_images(doc, sheet.data())) changed = true
+    }
     for (element in doc.select("[bgcolor],[style]")) {
         val background = declared_background(element) ?: continue
         if (color_luminance(background) == null || is_page_surface(background)) continue
@@ -180,25 +310,15 @@ internal fun lighten_dark_email_text(body: String): String = try {
         changed = true
     }
     for (element in doc.select("[style]")) {
-        if (element.hasAttr(KEEP_BACKGROUND_ATTRIBUTE)) continue
+        if (element.hasAttr(KEEP_BACKGROUND_ATTRIBUTE) || element.hasAttr(BACKGROUND_IMAGE_ATTRIBUTE)) continue
         val style = element.attr("style")
-        val lightened = lighten_color_declarations(style)
+        val lightened = clear_light_backgrounds(lighten_color_declarations(style))
         if (lightened != style) {
             element.attr("style", lightened)
             changed = true
         }
     }
-    for (element in doc.select("style")) {
-        val css = element.data()
-        val lightened = STYLE_RULE_BODY.replace(css) { rule ->
-            "{" + lighten_color_declarations(rule.groupValues[1]) + "}"
-        }
-        if (lightened != css) {
-            element.empty()
-            element.appendChild(org.jsoup.nodes.DataNode(lightened))
-            changed = true
-        }
-    }
+    if (lighten_style_blocks(doc) { clear_light_backgrounds(lighten_color_declarations(it)) }) changed = true
     for (element in doc.select("font[color]")) {
         if (reads_too_dark_on_dark(element.attr("color"))) {
             element.attr("color", FORCED_DARK_INK)
@@ -210,8 +330,10 @@ internal fun lighten_dark_email_text(body: String): String = try {
     body
 }
 
+internal const val DARK_PAGE_SELECTOR = "html:root,html:root>body"
+
 private const val KEEPS_BACKGROUND =
-    ":not([style*=\"background-image\" i]):not([style*=\"url(\" i]):not([background])" +
+    ":not([style*=\"url(\" i]):not([background]):not([$BACKGROUND_IMAGE_ATTRIBUTE])" +
         ":not([$KEEP_BACKGROUND_ATTRIBUTE])"
 
 private val NEUTRALIZED_TAGS = listOf(
@@ -231,7 +353,7 @@ internal fun forced_dark_mode_css(
     val readable_links = "$readable_link,$readable_link *"
     return """
 html{color-scheme:dark!important}
-html,body{background-color:transparent!important;color:$FORCED_DARK_INK!important}
+$DARK_PAGE_SELECTOR{background:transparent!important;color:$FORCED_DARK_INK!important}
 $neutralized{background-color:transparent!important;background-image:none!important}
 $readable_links{color:$link_hex!important}
 a[style*="background" i] *,[bgcolor] > a *{color:inherit!important}

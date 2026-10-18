@@ -21,7 +21,6 @@
 
 package org.astermail.android.design.components
 
-import org.astermail.android.design.remember_click_interaction
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -58,7 +57,7 @@ import org.astermail.android.design.AsterEasing
 import org.astermail.android.design.AsterMaterial
 import org.astermail.android.design.AsterSpacing
 import org.astermail.android.design.AsterShapes
-import org.astermail.android.design.aster_ripple
+import androidx.compose.material3.ripple
 import org.astermail.android.design.control_surface_color
 import org.astermail.android.design.disabled_surface_color
 import org.astermail.android.design.darken
@@ -222,7 +221,7 @@ private fun depth_button(
 ) {
     val colors = AsterMaterial.colors
     val interactive = enabled && !is_loading
-    val interaction = remember_click_interaction()
+    val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale = press_scale(pressed, interactive, "btn_scale")
     val resting_fill = if (enabled) fill else disabled_surface_color(colors)
@@ -293,7 +292,7 @@ fun AsterGhostButton(
 ) {
     val colors = AsterMaterial.colors
     val interactive = enabled && !is_loading
-    val interaction = remember_click_interaction()
+    val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale = press_scale(pressed, interactive, "ghost_btn_scale")
     val content_color = if (enabled) colors.accent_blue else colors.text_muted
@@ -306,13 +305,46 @@ fun AsterGhostButton(
                 enabled = interactive,
                 role = Role.Button,
                 interactionSource = interaction,
-                indication = aster_ripple(color = colors.accent_blue),
+                indication = ripple(color = colors.accent_blue),
                 onClick = onClick,
             )
             .padding(horizontal = AsterSpacing.lg),
         contentAlignment = Alignment.Center,
     ) {
         aster_button_content(label, is_loading, content_color)
+    }
+}
+
+@Composable
+fun AsterCompactGhostButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content_color: Color = Color.Unspecified,
+) {
+    val colors = AsterMaterial.colors
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale = press_scale(pressed, enabled, "compact_ghost_btn_scale")
+    val resting_color = if (content_color == Color.Unspecified) colors.accent_blue else content_color
+    val resolved_color = if (enabled) resting_color else colors.text_muted
+    Box(
+        modifier = modifier
+            .height(aster_button_compact_height)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(aster_button_shape)
+            .clickable(
+                enabled = enabled,
+                role = Role.Button,
+                interactionSource = interaction,
+                indication = ripple(color = resting_color),
+                onClick = onClick,
+            )
+            .padding(horizontal = AsterSpacing.md),
+        contentAlignment = Alignment.Center,
+    ) {
+        aster_button_content(label, false, resolved_color, aster_button_compact_label_size, false)
     }
 }
 

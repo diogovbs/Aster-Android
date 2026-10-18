@@ -116,19 +116,8 @@ internal fun sanitize_signature_html(html: String): String =
         ),
     )
 
-internal fun normalize_signature_link(raw: String): String? {
-    val trimmed = raw.trim()
-    if (trimmed.isEmpty() || trimmed.length > 2048) return null
-    if (trimmed.any { it.isISOControl() } || trimmed.contains(' ')) return null
-    val lower = trimmed.lowercase()
-    return when {
-        lower.startsWith("https://") || lower.startsWith("http://") -> trimmed
-        lower.startsWith("mailto:") -> trimmed
-        trimmed.contains('@') -> "mailto:$trimmed"
-        lower.contains(':') -> null
-        else -> "https://$trimmed"
-    }
-}
+internal fun normalize_signature_link(raw: String): String? =
+    org.astermail.android.ui.compose.normalize_link_url(raw)
 
 private fun js_string(value: String): String = org.json.JSONObject.quote(value)
 
@@ -247,6 +236,10 @@ fun signature_rich_editor(
     on_html_change: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    if (!org.astermail.android.ui.common.remember_webview_usable()) {
+        org.astermail.android.ui.common.webview_unavailable_notice(modifier)
+        return
+    }
     val document = remember { build_signature_document(sanitize_signature_html(initial_html)) }
 
     DisposableEffect(Unit) {
@@ -288,6 +281,13 @@ fun signature_rich_editor(
             }
         },
         update = { view -> controller.editor_view = view },
+        onRelease = { view ->
+            runCatching {
+                view.stopLoading()
+                view.removeJavascriptInterface("aster_bridge")
+                view.destroy()
+            }
+        },
         modifier = modifier,
     )
 }
