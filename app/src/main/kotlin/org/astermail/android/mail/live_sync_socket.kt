@@ -26,6 +26,9 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
@@ -46,9 +49,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
 
-enum class LiveSyncEvent { connected, mail_changed, new_mail }
+enum class LiveSyncEvent { connected, mail_changed, new_mail, folders_changed, tags_changed }
 
-enum class LiveSyncFrame { auth_success, auth_error, session_revoked, ping, mail_mutation, new_mail, contacts_changed }
+enum class LiveSyncFrame {
+    auth_success,
+    auth_error,
+    session_revoked,
+    ping,
+    mail_mutation,
+    new_mail,
+    contacts_changed,
+    folders_changed,
+    tags_changed,
+}
 
 fun parse_live_sync_frame(text: String): LiveSyncFrame? {
     if (text.length > LIVE_SYNC_MAX_FRAME_CHARS) return null
@@ -61,8 +74,35 @@ fun parse_live_sync_frame(text: String): LiveSyncFrame? {
         "mail_mutation" -> LiveSyncFrame.mail_mutation
         "new_mail", "new_reaction" -> LiveSyncFrame.new_mail
         "contacts_changed" -> LiveSyncFrame.contacts_changed
+        "folders_changed" -> LiveSyncFrame.folders_changed
+        "tags_changed" -> LiveSyncFrame.tags_changed
         else -> null
     }
+}
+
+data class ReactionFrame(
+    val mail_item_id: String?,
+    val target_mail_item_id: String?,
+    val thread_token: String?,
+    val event: String?,
+) {
+    val is_added: Boolean get() = event == "added"
+    val clears_unseen: Boolean get() = event == "seen" || event == "hidden"
+}
+
+private fun optional_frame_field(frame: JSONObject, name: String): String? =
+    if (frame.isNull(name)) null else frame.optString(name).takeIf { it.isNotBlank() }
+
+fun parse_reaction_frame(text: String): ReactionFrame? {
+    if (text.length > LIVE_SYNC_MAX_FRAME_CHARS) return null
+    val frame = runCatching { JSONObject(text) }.getOrNull() ?: return null
+    if (frame.optString("type") != "new_reaction") return null
+    return ReactionFrame(
+        mail_item_id = optional_frame_field(frame, "mail_item_id"),
+        target_mail_item_id = optional_frame_field(frame, "target_mail_item_id"),
+        thread_token = optional_frame_field(frame, "thread_token"),
+        event = optional_frame_field(frame, "event"),
+    )
 }
 
 private const val LIVE_SYNC_MAX_FRAME_CHARS = 65_536
@@ -74,6 +114,9 @@ class LiveSyncSocket @Inject constructor(
 ) {
 
     private enum class SessionEnd { closed, auth_failed, revoked }
+
+    private val _connected = MutableStateFlow(false)
+    val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private val client: OkHttpClient by lazy {
         val specs = if (BuildConfig.API_BASE_URL.startsWith("http://")) {
@@ -165,18 +208,24 @@ class LiveSyncSocket @Inject constructor(
         try {
             for (text in frames) {
                 when (parse_live_sync_frame(text)) {
-                    LiveSyncFrame.auth_success -> on_event(LiveSyncEvent.connected)
+                    LiveSyncFrame.auth_success -> {
+                        _connected.value = true
+                        on_event(LiveSyncEvent.connected)
+                    }
                     LiveSyncFrame.auth_error -> return SessionEnd.auth_failed
                     LiveSyncFrame.session_revoked -> return SessionEnd.revoked
                     LiveSyncFrame.ping -> runCatching { socket.send(PONG_FRAME) }
                     LiveSyncFrame.mail_mutation -> on_event(LiveSyncEvent.mail_changed)
                     LiveSyncFrame.new_mail -> on_event(LiveSyncEvent.new_mail)
                     LiveSyncFrame.contacts_changed -> request_contact_sync()
+                    LiveSyncFrame.folders_changed -> on_event(LiveSyncEvent.folders_changed)
+                    LiveSyncFrame.tags_changed -> on_event(LiveSyncEvent.tags_changed)
                     null -> Unit
                 }
             }
             return SessionEnd.closed
         } finally {
+            _connected.value = false
             runCatching { socket.close(NORMAL_CLOSURE, null) }
             runCatching { socket.cancel() }
         }

@@ -105,7 +105,7 @@ internal fun build_email_html(
     } else {
         body
     }
-    val declares_light = body.contains(Regex("color-scheme\\s*:\\s*light\\s+only", RegexOption.IGNORE_CASE))
+    val declares_light = body.contains(Regex("color-scheme\\s*:\\s*(?:light\\s+only|only\\s+light)\\b", RegexOption.IGNORE_CASE))
     val declares_light_bg = is_html_body && body.contains(
         Regex(
             "(?:background(?:-color)?\\s*:\\s*(?:#fff(?:fff)?|white|rgb\\(\\s*25[0-5])|bgcolor\\s*=\\s*[\"']?(?:#fff(?:fff)?|white))",
@@ -113,8 +113,8 @@ internal fun build_email_html(
         ),
     )
     val seeded_background = detect_body_background(render_body)
-    val designed_light =
-        declares_light || declares_light_bg || has_newsletter_layout || background_reads_light(seeded_background)
+    val designed_light = declares_light || declares_light_bg || has_newsletter_layout ||
+        background_reads_light(seeded_background) || (is_html_body && declares_light_background(render_body))
     val white_page = is_dark && is_html_body && designed_light && !force_dark_emails
     val simple_dark = is_dark && is_html_body && !white_page
     val force_light = is_html_body && !simple_dark
@@ -149,7 +149,7 @@ internal fun build_email_html(
     val dark_css = when {
         simple_dark -> """
 html{color-scheme:dark}
-html,body{background-color:transparent!important;color:#e8e8e8!important}
+$DARK_PAGE_SELECTOR{background:transparent!important;color:#e8e8e8!important}
 """
         white_page -> """
 html,body{background-color:#ffffff!important}
@@ -169,7 +169,7 @@ html,body{background-color:#ffffff!important}
     val table_css = if (has_newsletter_layout) {
         "#m{max-width:100%!important;overflow-x:auto!important;box-sizing:border-box!important}#m [style*=\"nowrap\" i],#m [nowrap]{white-space:normal!important}#m table{max-width:100%!important;box-sizing:border-box!important}#m img{max-width:100%!important;height:auto!important}#m div,#m p,#m blockquote,#m section,#m article{box-sizing:border-box!important;max-width:100%!important}td,th{box-sizing:border-box!important;max-width:100%!important}#m,#m *{word-break:normal!important;overflow-wrap:break-word!important;word-wrap:break-word!important}#m a{overflow-wrap:anywhere!important}"
     } else {
-        "table{max-width:100%!important;border-collapse:collapse;width:100%!important}td,th{overflow-wrap:break-word}"
+        "table{max-width:100%!important;border-collapse:collapse;width:100%!important}td,th{overflow-wrap:break-word}#m [data-aster-long-token]{overflow-wrap:anywhere}#m div,#m p,#m blockquote,#m section,#m article,#m pre,#m input,#m textarea,#m select,#m button{box-sizing:border-box!important;max-width:100%!important}"
     }
     val fit_content_width = declared_content_width(render_body)
     val viewport_meta = if (fit_content_width != null) {
@@ -191,7 +191,11 @@ html,body{background-color:#ffffff!important}
     } else {
         ""
     }
-    val dark_ready_body = if (force_dark_emails) lighten_dark_email_text(render_body) else render_body
+    val dark_ready_body = when {
+        force_dark_emails -> lighten_dark_email_text(render_body)
+        simple_dark -> lighten_dark_stylesheet_text(render_body)
+        else -> render_body
+    }
 
     val prepared_body = prepare_email_body(
         body = dark_ready_body,
@@ -201,9 +205,15 @@ html,body{background-color:#ffffff!important}
         simple_dark = simple_dark,
     )
 
-    val csp_meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src https://app.astermail.org https://mail-content.invalid data:; style-src 'unsafe-inline'; font-src https://app.astermail.org https://mail-content.invalid data:; script-src 'none'; worker-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'\">"
+    val html_style = when {
+        simple_dark || force_dark_emails -> " style=\"color-scheme:dark!important\""
+        is_html_body -> " style=\"background-color:transparent\""
+        else -> ""
+    }
 
-    return """<!DOCTYPE html><html${if (has_newsletter_layout) " data-nl=\"1\"" else ""}${if (white_page) " data-white=\"1\"" else ""}${if (simple_dark) " data-dark=\"1\"" else ""}${if (force_dark_emails) " data-dark-force=\"1\"" else ""}${if (is_html_body && !simple_dark) " style=\"background-color:transparent\"" else ""}><head>
+    val csp_meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src https://app.astermail.org/api/images/v1/proxy https://mail-content.invalid data:; style-src 'unsafe-inline'; font-src https://mail-content.invalid data:; script-src 'none'; worker-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'\">"
+
+    return """<!DOCTYPE html><html${if (has_newsletter_layout) " data-nl=\"1\"" else ""}${if (white_page) " data-white=\"1\"" else ""}${if (simple_dark) " data-dark=\"1\"" else ""}${if (force_dark_emails) " data-dark-force=\"1\"" else ""}${html_style}><head>
 $csp_meta
 <meta charset="utf-8">
 $viewport_meta
@@ -225,6 +235,7 @@ pre,code{overflow-x:auto;max-width:100%}
 img.blocked-image[data-blocked='true']{opacity:1!important;filter:none!important}
 $table_css
 a.aster-email-button,#m a.aster-email-button{white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;max-width:100%!important}
+#m a.aster-email-button[$WRAP_BUTTON_LABEL_ATTRIBUTE]{white-space:normal!important}
 .aster_quote,.gmail_quote,.protonmail_quote,.yahoo_quoted,.moz-cite-prefix{display:none}
 .aster-quoted-content .aster_quote,.aster-quoted-content .gmail_quote,.aster-quoted-content .protonmail_quote,.aster-quoted-content .yahoo_quoted,.aster-quoted-content .moz-cite-prefix,.aster-forwarded-content .aster_quote,.aster-forwarded-content .gmail_quote,.aster-forwarded-content .protonmail_quote,.aster-forwarded-content .yahoo_quoted,.aster-forwarded-content .moz-cite-prefix{display:block;margin:0;padding:0}
 blockquote{margin:8px 0;padding-left:12px;border-left:2px solid $bq_border;color:$bq_color}

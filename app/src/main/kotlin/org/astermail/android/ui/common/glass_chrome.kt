@@ -37,6 +37,7 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.Dp
@@ -71,7 +72,7 @@ fun Modifier.glass_chrome(
     val veil = colors.bg_primary
     val tint = colors.glass_surface(colors.bg_card)
     return this
-        .onGloballyPositioned { origin = it.positionInWindow() }
+        .onGloballyPositioned { if (it.isAttached) origin = it.positionInWindow() }
         .clipToBounds()
         .drawBehind {
             val fade = alpha().coerceIn(0f, 1f)
@@ -93,7 +94,7 @@ fun Modifier.glass_chrome(
                 }
             }
             drawRect(color = solid)
-            draw_theme_window_slice(blur, window, origin)
+            draw_theme_window_slice(blur, window, origin, FilterQuality.Low)
             drawRect(color = veil.copy(alpha = theme_veil_alpha))
             drawRect(color = tint.copy(alpha = tint.alpha * 0.7f))
             if (masked) {
@@ -124,12 +125,12 @@ fun Modifier.glass_bar(colors: AsterSemanticColors): Modifier {
     val veil = colors.bg_primary
     val tint = colors.glass_surface(colors.bg_card)
     return this
-        .onGloballyPositioned { origin = it.positionInWindow() }
+        .onGloballyPositioned { if (it.isAttached) origin = it.positionInWindow() }
         .clipToBounds()
         .drawBehind {
             drawRect(color = solid)
             val window = Size(container.width.toFloat(), container.height.toFloat())
-            draw_theme_window_slice(blur, window, origin)
+            draw_theme_window_slice(blur, window, origin, FilterQuality.Low)
             drawRect(color = veil.copy(alpha = theme_veil_alpha))
             drawRect(color = tint.copy(alpha = tint.alpha * glass_bar_tint_strength))
         }
@@ -144,7 +145,7 @@ fun Modifier.page_punch(colors: AsterSemanticColors): Modifier {
     var origin by remember { mutableStateOf(Offset.Zero) }
     val veil = colors.bg_primary
     return this
-        .onGloballyPositioned { origin = it.positionInWindow() }
+        .onGloballyPositioned { if (it.isAttached) origin = it.positionInWindow() }
         .clipToBounds()
         .drawBehind {
             drawRect(color = veil)
