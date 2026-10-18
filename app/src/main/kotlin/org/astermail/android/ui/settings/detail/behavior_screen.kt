@@ -373,8 +373,6 @@ fun BehaviorScreen(
         if (!prefs_loaded) {
             preferences_load_placeholder()
         } else {
-
-            // ── Reading & Conversations ──────────────────────────────────────────
             section_label(stringResource(R.string.section_reading_conversations))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 choice_group_title(stringResource(R.string.mark_as_read))
@@ -414,6 +412,11 @@ fun BehaviorScreen(
                     subtitle = stringResource(R.string.inbox_categories_subtitle),
                     checked = inbox_categories,
                     on_change = { inbox_categories = it; save_trigger++ },
+                )
+                settings_row_gap(modifier = Modifier)
+                launch_folder_row(
+                    categories_enabled = inbox_categories,
+                    enabled_categories = enabled_categories,
                 )
                 settings_row_gap(modifier = Modifier)
                 choice_group_title(stringResource(R.string.sort_by))
@@ -514,7 +517,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Composing & Replies ──────────────────────────────────────────────
             section_label(stringResource(R.string.section_composing_replies))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 choice_group_title(stringResource(R.string.default_reply))
@@ -550,7 +552,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Undo Send ────────────────────────────────────────────────────────
             section_label(stringResource(R.string.undo_send))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 behavior_toggle(
@@ -580,7 +581,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Confirmations ────────────────────────────────────────────────────
             section_label(stringResource(R.string.confirmations))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 behavior_toggle(stringResource(R.string.confirm_before_delete), null, confirm_delete) { confirm_delete = it; save_trigger++ }
@@ -592,7 +592,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Spam Filtering ───────────────────────────────────────────────────
             section_label(stringResource(R.string.section_spam_filtering))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 behavior_toggle(
@@ -629,7 +628,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Trash ───────────────────────────────────────────────
             section_label(stringResource(R.string.folder_trash))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 choice_group_title(
@@ -644,7 +642,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Protected Folders ────────────────────────────────────────────────
             section_label(stringResource(R.string.section_protected_folders))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 choice_group_title(stringResource(R.string.folder_lock_mode))
@@ -675,7 +672,6 @@ fun BehaviorScreen(
 
             v_gap(AsterSpacing.lg)
 
-            // ── Advanced ─────────────────────────────────────────────────────────
             section_label(stringResource(R.string.section_advanced))
             AsterCard(modifier = Modifier.fillMaxWidth()) {
                 behavior_toggle(
@@ -748,7 +744,10 @@ internal fun ColumnScope.translation_settings_section(
         v_gap(AsterSpacing.md)
         AsterCard(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = stringResource(R.string.translate_webview_outdated_notice),
+                text = stringResource(
+                    R.string.translate_webview_outdated_notice,
+                    org.astermail.android.translation.TranslationRuntime.webview_name(context),
+                ),
                 color = colors.text_primary,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(start = AsterSpacing.lg, end = AsterSpacing.lg, top = AsterSpacing.md, bottom = 4.dp),

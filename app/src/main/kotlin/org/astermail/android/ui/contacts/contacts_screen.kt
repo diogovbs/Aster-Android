@@ -21,6 +21,7 @@
 
 package org.astermail.android.ui.contacts
 
+import org.astermail.android.ui.common.vertical_scroll_with_indicator
 import compose.icons.TablerIcons
 import compose.icons.tablericons.*
 
@@ -34,6 +35,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +53,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -78,6 +81,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -217,13 +221,7 @@ fun ContactsScreen(
     val filtered = remember(query, filter_favorites, ui_state.contacts) {
         ui_state.contacts
             .filter { if (filter_favorites) it.is_favorite else true }
-            .filter {
-                val q = query.trim().lowercase()
-                if (q.isEmpty()) true
-                else it.name.lowercase().contains(q) ||
-                    it.email.lowercase().contains(q) ||
-                    it.company.lowercase().contains(q)
-            }
+            .filter { contact_matches_query(it, query) }
             .sortedBy { it.name.uppercase() }
     }
 
@@ -237,16 +235,7 @@ fun ContactsScreen(
     }
 
     val filtered_trash = remember(query, ui_state.trashed_contacts) {
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) {
-            ui_state.trashed_contacts
-        } else {
-            ui_state.trashed_contacts.filter {
-                it.name.lowercase().contains(q) ||
-                    it.email.lowercase().contains(q) ||
-                    it.company.lowercase().contains(q)
-            }
-        }
+        ui_state.trashed_contacts.filter { contact_matches_query(it, query) }
     }
 
     val on_compose_selection: () -> Unit = {
@@ -262,7 +251,8 @@ fun ContactsScreen(
         modifier = Modifier
             .fillMaxSize()
             .page_surface(colors)
-            .systemBarsPadding(),
+            .systemBarsPadding()
+            .imePadding(),
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (ui_state.is_bulk_working && ui_state.bulk_total > 1) {
@@ -614,10 +604,13 @@ fun ContactsScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         val empty_message = ui_state.error
-                            ?: if (query.isBlank()) {
-                                stringResource(R.string.no_contacts_yet)
-                            } else {
-                                stringResource(R.string.no_contacts_match, query.trim())
+                            ?: when (contacts_empty_reason(query, filter_favorites)) {
+                                ContactsEmptyReason.no_contacts -> stringResource(R.string.no_contacts_yet)
+                                ContactsEmptyReason.no_match ->
+                                    stringResource(R.string.no_contacts_match, query.trim())
+                                ContactsEmptyReason.no_favorites -> stringResource(R.string.no_favorite_contacts)
+                                ContactsEmptyReason.no_favorites_match ->
+                                    stringResource(R.string.no_favorite_contacts_match, query.trim())
                             }
                         Text(
                             text = empty_message,
@@ -1274,7 +1267,7 @@ private fun new_group_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 320.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1311,8 +1304,9 @@ private fun new_group_dialog(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    group_colors.forEach { hex ->
+                    group_colors.forEachIndexed { index, hex ->
                         val is_selected = hex.equals(color, ignoreCase = true)
+                        val swatch_label = stringResource(R.string.color_swatch_option, index + 1, group_colors.size)
                         Box(
                             modifier = Modifier
                                 .size(28.dp)
@@ -1324,7 +1318,8 @@ private fun new_group_dialog(
                                     else
                                         Modifier.border(1.dp, colors.border_secondary, CircleShape)
                                 )
-                                .clickable { color = hex },
+                                .selectable(selected = is_selected, role = Role.RadioButton) { color = hex }
+                                .semantics { contentDescription = swatch_label },
                             contentAlignment = Alignment.Center,
                         ) {
                             if (is_selected) {
@@ -1388,7 +1383,7 @@ private fun group_picker_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 320.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
                 groups.forEach { group ->
                     Row(
@@ -1453,7 +1448,7 @@ private fun merge_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 380.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
                 cluster.contacts.forEachIndexed { index, contact ->
                     val is_primary = contact.id == primary_id
