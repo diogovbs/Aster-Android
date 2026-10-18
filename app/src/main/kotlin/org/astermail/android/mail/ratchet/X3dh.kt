@@ -46,24 +46,40 @@ object X3dh {
         val pq_ciphertext: ByteArray? = null,
         val pq_key_id: Int? = null,
         val pq_mode: PqMode = PqMode.NONE,
+        val x3dh_version: Int = VERSION_LEGACY,
     )
 
     private data class PqTarget(
         val public_key: ByteArray,
         val key_id: Int,
         val info: ByteArray,
+        val info_v2: ByteArray,
         val mode: PqMode,
     )
+
+    fun negotiated_sender_version(advertised: Int?): Int =
+        if (advertised != null && advertised >= VERSION_TRANSCRIPT_BOUND) {
+            VERSION_TRANSCRIPT_BOUND
+        } else {
+            VERSION_LEGACY
+        }
 
     private fun select_pq_target(
         recipient_pq_prekey: Pair<Int, ByteArray>?,
         recipient_pq_identity: ByteArray?,
+        signature_covers_pq_identity: Boolean,
     ): PqTarget? {
-        if (recipient_pq_prekey != null && recipient_pq_prekey.second.size == ML_KEM_768_EK_LEN) {
+        val identity_usable = recipient_pq_identity != null && recipient_pq_identity.size == ML_KEM_768_EK_LEN
+        val prefer_signed_identity = signature_covers_pq_identity && identity_usable
+        if (!prefer_signed_identity &&
+            recipient_pq_prekey != null &&
+            recipient_pq_prekey.second.size == ML_KEM_768_EK_LEN
+        ) {
             return PqTarget(
                 public_key = recipient_pq_prekey.second,
                 key_id = recipient_pq_prekey.first,
                 info = info_pq,
+                info_v2 = info_pq_v2,
                 mode = PqMode.ONETIME,
             )
         }
@@ -73,6 +89,7 @@ object X3dh {
                 public_key = recipient_pq_identity,
                 key_id = PQ_IDENTITY_KEY_ID,
                 info = info_pq_identity,
+                info_v2 = info_pq_identity_v2,
                 mode = PqMode.IDENTITY,
             )
         }
@@ -83,7 +100,7 @@ object X3dh {
     fun supports_pq(
         recipient_pq_prekey: Pair<Int, ByteArray>?,
         recipient_pq_identity: ByteArray?,
-    ): Boolean = select_pq_target(recipient_pq_prekey, recipient_pq_identity) != null
+    ): Boolean = select_pq_target(recipient_pq_prekey, recipient_pq_identity, false) != null
 
     fun perform_sender(
         sender_identity_jwk: String,
@@ -91,6 +108,8 @@ object X3dh {
         recipient_signed_prekey_raw: ByteArray,
         recipient_pq_prekey: Pair<Int, ByteArray>? = null,
         recipient_pq_identity: ByteArray? = null,
+        signature_covers_pq_identity: Boolean = false,
+        x3dh_version: Int = VERSION_LEGACY,
     ): SenderResult {
         val sender_identity_priv = RatchetCrypto.parse_p256_private_jwk(sender_identity_jwk)
         val recipient_identity_pub = RatchetCrypto.parse_p256_public_raw(recipient_identity_raw)
@@ -102,15 +121,37 @@ object X3dh {
         val dh2 = RatchetCrypto.ecdh(ephemeral_kp.private_key, recipient_identity_pub)
         val dh3 = RatchetCrypto.ecdh(ephemeral_kp.private_key, recipient_spk_pub)
 
-        val pq_target = select_pq_target(recipient_pq_prekey, recipient_pq_identity)
+        val pq_target = select_pq_target(recipient_pq_prekey, recipient_pq_identity, signature_covers_pq_identity)
 
         val pq_pair = if (pq_target != null) {
             val encap = RatchetCrypto.ml_kem_768_encapsulate(pq_target.public_key)
             encap.ciphertext to encap.shared_secret
         } else null
 
-        val combined = if (pq_pair != null) dh1 + dh2 + dh3 + pq_pair.second else dh1 + dh2 + dh3
-        val info = pq_target?.info ?: info_classical
+        val transcript_bound = x3dh_version == VERSION_TRANSCRIPT_BOUND
+
+        val transcript = if (transcript_bound) {
+            val sender_identity_raw = RatchetCrypto.p256_public_raw_from_private_jwk(sender_identity_jwk)
+            if (pq_pair != null) {
+                sender_identity_raw + recipient_identity_raw + pq_pair.first
+            } else {
+                sender_identity_raw + recipient_identity_raw
+            }
+        } else {
+            ByteArray(0)
+        }
+
+        val combined = if (pq_pair != null) {
+            dh1 + dh2 + dh3 + pq_pair.second + transcript
+        } else {
+            dh1 + dh2 + dh3 + transcript
+        }
+        val info = when {
+            pq_target == null && transcript_bound -> info_classical_v2
+            pq_target == null -> info_classical
+            transcript_bound -> pq_target.info_v2
+            else -> pq_target.info
+        }
         val shared = RatchetCrypto.hkdf_sha256(combined, salt, info, 32)
 
         dh1.fill(0); dh2.fill(0); dh3.fill(0); combined.fill(0)
@@ -122,6 +163,7 @@ object X3dh {
             pq_ciphertext = pq_pair?.first,
             pq_key_id = pq_target?.key_id,
             pq_mode = pq_target?.mode ?: PqMode.NONE,
+            x3dh_version = if (transcript_bound) VERSION_TRANSCRIPT_BOUND else VERSION_LEGACY,
         )
     }
 

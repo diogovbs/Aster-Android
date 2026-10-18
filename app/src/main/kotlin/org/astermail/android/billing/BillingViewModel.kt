@@ -147,6 +147,7 @@ const val CHECKOUT_TARGET_INTERVAL_KEY = "billing_interval"
 fun checkout_interval_for_term_months(term_months: Int): String =
     if (term_months >= 12) "year" else "month"
 const val SIGN_IN_WAIT_TIMEOUT_MS = 15_000L
+private const val local_dismissed_marker = "local"
 
 @HiltViewModel
 class BillingViewModel @Inject constructor(
@@ -300,6 +301,19 @@ class BillingViewModel @Inject constructor(
         val existing = play_config_job
         if (existing != null && (existing.isActive || _state.value.play_enabled)) return existing
         return viewModelScope.launch { load_play_config() }.also { play_config_job = it }
+    }
+
+    fun refresh_play_special_offer() {
+        if (!play_install_check()) return
+        if (play_config_job?.isActive == true || play_redeem_job?.isActive == true) return
+        val s = _state.value
+        if (s.is_acting || s.play_purchase_request != null) return
+        val ready = s.play_enabled &&
+            s.play_special_offer_eligible &&
+            play_special_offer_for(s.play_offers, s.play_special_offer) != null
+        if (ready) return
+        val redeem = !s.play_enabled
+        play_config_job = viewModelScope.launch { load_play_config(redeem = redeem) }
     }
 
     fun load_play_offers() {
@@ -900,12 +914,15 @@ class BillingViewModel @Inject constructor(
         viewModelScope.launch { reload_subscription() }
     }
 
-    private suspend fun reload_subscription() {
+    suspend fun refresh_subscription(): Boolean = reload_subscription()
+
+    private suspend fun reload_subscription(): Boolean {
         _state.update { it.copy(is_loading = true, subscription_error = null) }
         try {
             val sub = billing_api.get_subscription()
             _state.update { it.copy(subscription = sub, is_loading = false, subscription_error = null) }
             PaymentFailedNotifier.observe(ctx, sub.status, sub.payment_failed_at, sub.current_period_end, sub.plan.name)
+            return true
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
             if (BuildConfig.DEBUG) android.util.Log.w("BillingVM", "get_subscription failed", t)
@@ -915,6 +932,7 @@ class BillingViewModel @Inject constructor(
                     subscription_error = localized_api_error(ctx, t, ctx.getString(R.string.subscription_refresh_failed)),
                 )
             }
+            return false
         }
     }
 
@@ -1329,10 +1347,28 @@ class BillingViewModel @Inject constructor(
         _state.update { it.copy(academic_sent = false, academic_error = null) }
     }
 
-    fun load_onboarding_checklist() {
+    private var onboarding_finished_for: String? = null
+    private var locally_dismissed = false
+    private var locally_dismissed_for: String? = null
+
+    private fun is_locally_dismissed(account: String?): Boolean =
+        locally_dismissed && locally_dismissed_for == account
+
+    fun load_onboarding_checklist(force: Boolean = true) {
+        val account = cache_account_key()
+        if (!force && account != null && account == onboarding_finished_for) return
         viewModelScope.launch {
             try {
-                _state.update { it.copy(onboarding = billing_api.get_onboarding_checklist()) }
+                val fetched = billing_api.get_onboarding_checklist()
+                val checklist = if (fetched.dismissed_at == null && is_locally_dismissed(account)) {
+                    fetched.copy(dismissed_at = local_dismissed_marker)
+                } else {
+                    fetched
+                }
+                _state.update { it.copy(onboarding = checklist) }
+                val finished = checklist.dismissed_at != null ||
+                    (checklist.tasks.isNotEmpty() && checklist.tasks.values.all { it })
+                onboarding_finished_for = if (finished) account else null
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 if (BuildConfig.DEBUG) android.util.Log.w("BillingVM", "get_onboarding_checklist failed", t)
@@ -1342,12 +1378,25 @@ class BillingViewModel @Inject constructor(
 
     fun dismiss_onboarding_checklist() {
         val current = _state.value.onboarding ?: return
-        _state.update { it.copy(onboarding = current.copy(dismissed_at = "local")) }
+        val account = cache_account_key()
+        val previous_dismissed_at = current.dismissed_at
+        val previous_finished_for = onboarding_finished_for
+        locally_dismissed = true
+        locally_dismissed_for = account
+        _state.update { it.copy(onboarding = current.copy(dismissed_at = local_dismissed_marker)) }
         viewModelScope.launch {
             try {
                 billing_api.dismiss_onboarding_checklist()
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
+                if (is_locally_dismissed(account)) {
+                    locally_dismissed = false
+                    locally_dismissed_for = null
+                }
+                if (cache_account_key() == account) {
+                    _state.update { it.copy(onboarding = it.onboarding?.copy(dismissed_at = previous_dismissed_at)) }
+                    if (onboarding_finished_for == account) onboarding_finished_for = previous_finished_for
+                }
                 if (BuildConfig.DEBUG) android.util.Log.w("BillingVM", "dismiss_onboarding_checklist failed", t)
             }
         }
@@ -1632,7 +1681,10 @@ class BillingViewModel @Inject constructor(
             _state.value = _state.value.copy(is_acting = true, acting_action = "addon_$addon_id", error = null, checkout_url = null)
             try {
                 val response = billing_api.purchase_storage_addon(
-                    org.astermail.android.api.billing.PurchaseAddonRequest(addon_id = addon_id)
+                    org.astermail.android.api.billing.PurchaseAddonRequest(
+                        addon_id = addon_id,
+                        billing_interval = billing_interval.takeIf { it == "year" },
+                    )
                 )
                 _state.value = _state.value.copy(is_acting = false, acting_action = null, checkout_url = response.url)
             } catch (cancelled: CancellationException) {

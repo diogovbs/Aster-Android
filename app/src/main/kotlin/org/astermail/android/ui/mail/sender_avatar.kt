@@ -57,6 +57,7 @@ import org.astermail.android.R
 import org.astermail.android.api.BuildConfig as ApiBuildConfig
 import org.astermail.android.api.auth.PublicProfile
 import org.astermail.android.contacts.ContactPhotoDirectory
+import org.astermail.android.design.AsterMaterial
 import org.astermail.android.mail.AsterProfileResolverHolder
 import org.astermail.android.mail.OwnAddressAvatars
 import org.astermail.android.mail.is_aster_domain
@@ -157,7 +158,13 @@ fun SenderAvatar(
     profile_color: String? = null,
     use_peer_profile_color: Boolean = true,
     use_contact_photo: Boolean = true,
+    plain: Boolean = false,
 ) {
+    if (plain) {
+        val (plain_bg, plain_fg) = avatar_colors_for(avatar_key_for(email, name), null)
+        initials_circle(name, email, plain_bg, plain_fg, size, modifier)
+        return
+    }
     if (use_contact_photo && !remember(email, sender_authenticated) { is_aster_system_sender(email, sender_authenticated) }) {
         val contact_photo = remember_contact_photo(email)
         if (contact_photo != null) {
@@ -176,8 +183,12 @@ fun SenderAvatar(
         var loaded_pp by remember(resolved_profile_picture) {
             mutableStateOf(avatar_already_cached(context, resolved_profile_picture))
         }
+        var pp_drawable by remember(resolved_profile_picture) { mutableStateOf<android.graphics.drawable.Drawable?>(null) }
+        val pp_tone = remember_logo_tone(resolved_profile_picture, pp_drawable)
+        val pp_backdrop = logo_contrast_backdrop(pp_tone, AsterMaterial.colors.is_dark)
+        val pp_inset = if (loaded_pp && pp_backdrop != null) size * logo_backdrop_inset else 0.dp
         Box(
-            modifier = modifier.size(size).clip(CircleShape).background(if (loaded_pp) Color.Transparent else bg_fb),
+            modifier = modifier.size(size).clip(CircleShape).background(if (loaded_pp) pp_backdrop ?: Color.Transparent else bg_fb),
             contentAlignment = Alignment.Center,
         ) {
             if (!loaded_pp) {
@@ -203,8 +214,9 @@ fun SenderAvatar(
                 contentScale = ContentScale.Crop,
                 onState = { state ->
                     loaded_pp = state is coil.compose.AsyncImagePainter.State.Success
+                    if (state is coil.compose.AsyncImagePainter.State.Success) pp_drawable = state.result.drawable
                 },
-                modifier = Modifier.size(size).clip(CircleShape),
+                modifier = Modifier.size(size).padding(pp_inset).clip(CircleShape),
             )
         }
         return
@@ -249,6 +261,10 @@ fun SenderAvatar(
     var loaded by remember(url) { mutableStateOf(avatar_already_cached(context, url)) }
     var attempt by remember(url) { mutableStateOf(0) }
     var pending_attempt by remember(url) { mutableStateOf(0) }
+    var logo_drawable by remember(url) { mutableStateOf<android.graphics.drawable.Drawable?>(null) }
+    val logo_tone = remember_logo_tone(url, logo_drawable)
+    val is_dark = AsterMaterial.colors.is_dark
+    val logo_inset = if (loaded && logo_contrast_backdrop(logo_tone, is_dark) != null) size * logo_backdrop_inset else 0.dp
 
     LaunchedEffect(url, pending_attempt) {
         if (pending_attempt <= attempt) return@LaunchedEffect
@@ -257,7 +273,7 @@ fun SenderAvatar(
     }
 
     Box(
-        modifier = modifier.size(size).clip(CircleShape).background(if (loaded) Color.White else bg),
+        modifier = modifier.size(size).clip(CircleShape).background(if (loaded) sender_logo_backdrop(logo_tone, is_dark) else bg),
         contentAlignment = Alignment.Center,
     ) {
         if (!loaded) {
@@ -283,6 +299,7 @@ fun SenderAvatar(
             contentScale = ContentScale.Crop,
             onState = { state ->
                 loaded = state is coil.compose.AsyncImagePainter.State.Success
+                if (state is coil.compose.AsyncImagePainter.State.Success) logo_drawable = state.result.drawable
                 if (loaded) clear_favicon_miss(root_domain)
                 if (state is coil.compose.AsyncImagePainter.State.Error) {
                     val error = state.result.throwable
@@ -294,7 +311,7 @@ fun SenderAvatar(
                     }
                 }
             },
-            modifier = Modifier.size(size).clip(CircleShape),
+            modifier = Modifier.size(size).padding(logo_inset).clip(CircleShape),
         )
     }
 }
@@ -426,8 +443,12 @@ private fun AsterDomainAvatar(
         var loaded by remember(resolved_pic) {
             mutableStateOf(avatar_already_cached(context, resolved_pic))
         }
+        var pic_drawable by remember(resolved_pic) { mutableStateOf<android.graphics.drawable.Drawable?>(null) }
+        val pic_tone = remember_logo_tone(resolved_pic, pic_drawable)
+        val pic_backdrop = logo_contrast_backdrop(pic_tone, AsterMaterial.colors.is_dark)
+        val pic_inset = if (loaded && pic_backdrop != null) size * logo_backdrop_inset else 0.dp
         Box(
-            modifier = modifier.size(size).clip(CircleShape).background(if (loaded) Color.Transparent else aster_bg),
+            modifier = modifier.size(size).clip(CircleShape).background(if (loaded) pic_backdrop ?: Color.Transparent else aster_bg),
             contentAlignment = Alignment.Center,
         ) {
             if (!loaded) {
@@ -453,8 +474,9 @@ private fun AsterDomainAvatar(
                 contentScale = ContentScale.Crop,
                 onState = { state ->
                     loaded = state is coil.compose.AsyncImagePainter.State.Success
+                    if (state is coil.compose.AsyncImagePainter.State.Success) pic_drawable = state.result.drawable
                 },
-                modifier = Modifier.size(size).clip(CircleShape),
+                modifier = Modifier.size(size).padding(pic_inset).clip(CircleShape),
             )
         }
         return
@@ -494,6 +516,7 @@ fun StackedAvatars(
     max_visible: Int = 3,
     authenticated_system_email: String? = null,
     modifier: Modifier = Modifier,
+    plain: Boolean = false,
 ) {
     val list = if (participants.isEmpty()) emptyList() else participants
     if (list.size <= 1) {
@@ -506,6 +529,7 @@ fun StackedAvatars(
                 size = size,
                 sender_authenticated = matches_authenticated_system(em, authenticated_system_email),
                 modifier = modifier,
+                plain = plain,
             )
         }
         return
@@ -525,6 +549,7 @@ fun StackedAvatars(
                     size = each_size,
                     sender_authenticated = matches_authenticated_system(em, authenticated_system_email),
                     modifier = Modifier.align(alignments[idx]),
+                    plain = plain,
                 )
             }
         }

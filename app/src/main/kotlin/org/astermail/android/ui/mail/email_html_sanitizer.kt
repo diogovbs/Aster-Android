@@ -92,18 +92,22 @@ object EmailHtmlSanitizer {
         }
     }
 
-    private fun sanitize_unsafe(raw_html: String, options: SanitizeOptions): String {
-        val bounded_html = if (raw_html.length > max_sanitizer_input_chars) {
-            raw_html.take(max_sanitizer_input_chars)
-        } else {
-            raw_html
-        }
-        val pre = strip_dangerous_blocks(bounded_html)
-        val head_styles = extract_head_styles(pre)
-        val body_only = extract_body_html(pre)
-        val dirty = Jsoup.parseBodyFragment(body_only, "https://mail-content.invalid/")
+    private fun bounded_input(raw_html: String): String =
+        if (raw_html.length > max_sanitizer_input_chars) raw_html.take(max_sanitizer_input_chars) else raw_html
+
+    private fun clean_body(pre: String, clean_tracking_links: Boolean): Document {
+        val dirty = Jsoup.parseBodyFragment(extract_body_html(pre), "https://mail-content.invalid/")
+        drop_blank_image_sources(dirty)
         val doc = Cleaner(safelist).clean(dirty).apply { outputSettings(raw_output_settings()) }
-        scrub_attributes(doc, options.clean_tracking_links)
+        scrub_attributes(doc, clean_tracking_links)
+        remove_sourceless_images(doc)
+        return doc
+    }
+
+    private fun sanitize_unsafe(raw_html: String, options: SanitizeOptions): String {
+        val pre = strip_dangerous_blocks(bounded_input(raw_html))
+        val head_styles = extract_head_styles(pre)
+        val doc = clean_body(pre, options.clean_tracking_links)
         if (options.remove_tracking_pixels) remove_tracking_pixels(doc)
         scrub_style_blocks(doc, options)
         autolink_bare_urls(doc, options.clean_tracking_links)
@@ -117,11 +121,21 @@ object EmailHtmlSanitizer {
         return sb.toString()
     }
 
-    private fun remove_tracking_pixels(doc: Document) {
+    private fun drop_blank_image_sources(doc: Document) {
         for (img in doc.select("img[src]")) {
-            val lower = img.attr("src").trim().lowercase()
-            if (!lower.startsWith("http://") && !lower.startsWith("https://")) continue
-            if (is_tracking_pixel(img)) img.remove()
+            if (img.attr("src").isBlank()) img.removeAttr("src")
+        }
+    }
+
+    private fun remove_sourceless_images(doc: Document) {
+        for (img in doc.select("img")) {
+            if (img.attr("src").isBlank() && img.attr("srcset").isBlank()) img.remove()
+        }
+    }
+
+    private fun remove_tracking_pixels(doc: Document) {
+        for (img in doc.select("img")) {
+            if (remote_image_source(img) != null && is_tracking_pixel(img)) img.remove()
         }
     }
 
@@ -155,26 +169,39 @@ object EmailHtmlSanitizer {
         val param_counts: List<Pair<String, Int>> = emptyList(),
         val pixel_count: Int = 0,
         val cleaned_link_count: Int = 0,
+        val image_count: Int = 0,
+        val pixel_urls: List<String> = emptyList(),
+        val image_urls: List<String> = emptyList(),
     ) {
         val total: Int get() = pixel_count + cleaned_link_count
     }
 
-    private const val TRACKER_SCAN_MAX_CHARS = 2 * 1024 * 1024
+    private const val TRACKER_URL_LIST_CAP = 60
+
+    internal fun remote_image_source(img: Element): String? {
+        val src = img.attr("src").ifBlank { img.attr("srcset").trim().substringBefore(' ') }
+        return src.trim().takeUnless { is_local_image_source(src) }
+    }
 
     fun analyze_trackers(html: String?): TrackerReport {
         if (html.isNullOrBlank()) return TrackerReport()
-        if (html.length > TRACKER_SCAN_MAX_CHARS) return TrackerReport()
         return try {
-            val doc = Jsoup.parseBodyFragment(html)
+            val doc = clean_body(strip_dangerous_blocks(bounded_input(html)), clean_tracking_links = false)
             val domains = LinkedHashMap<String, Int>()
             var pixels = 0
-            for (img in doc.select("img[src]")) {
-                val src = img.attr("src").trim()
-                val lower = src.lowercase()
-                if (!lower.startsWith("http://") && !lower.startsWith("https://")) continue
-                if (!is_tracking_pixel(img)) continue
+            var images = 0
+            val pixel_urls = mutableListOf<String>()
+            val image_urls = mutableListOf<String>()
+            for (img in doc.select("img")) {
+                val src = remote_image_source(img) ?: continue
+                if (!is_tracking_pixel(img)) {
+                    images++
+                    if (image_urls.size < TRACKER_URL_LIST_CAP) image_urls.add(src)
+                    continue
+                }
                 pixels++
-                val host = url_host(src) ?: continue
+                if (pixel_urls.size < TRACKER_URL_LIST_CAP) pixel_urls.add(src)
+                val host = url_host(src) ?: src
                 domains[host] = (domains[host] ?: 0) + 1
             }
             val params = LinkedHashMap<String, Int>()
@@ -193,6 +220,9 @@ object EmailHtmlSanitizer {
                 param_counts = params.entries.sortedByDescending { it.value }.map { it.key to it.value },
                 pixel_count = pixels,
                 cleaned_link_count = cleaned_links,
+                image_count = images,
+                pixel_urls = pixel_urls,
+                image_urls = image_urls,
             )
         } catch (_: Throwable) {
             TrackerReport()
@@ -248,8 +278,8 @@ object EmailHtmlSanitizer {
         if (html.isBlank()) return html
         val doc = Jsoup.parseBodyFragment(html).apply { outputSettings(raw_output_settings()) }
         for (img in doc.select("img")) {
-            val src = img.attr("src").ifBlank { img.attr("srcset").trim().substringBefore(' ') }
-            if (is_local_image_source(src)) {
+            val src = remote_image_source(img)
+            if (src == null) {
                 img.removeAttr("srcset")
                 img.removeAttr("sizes")
                 continue
@@ -272,10 +302,91 @@ object EmailHtmlSanitizer {
         RegexOption.IGNORE_CASE,
     )
 
-    private val css_remote_url = Regex(
-        """url\(\s*["']?(?!data:|cid:|#)[^"')\s]+["']?\s*\)""",
-        RegexOption.IGNORE_CASE,
-    )
+    private val css_url_open = Regex("""url\(""", RegexOption.IGNORE_CASE)
+    private val css_local_target = Regex("""^(?:data:|cid:|#)""", RegexOption.IGNORE_CASE)
+    private val css_hex_escape = Regex("""\\([0-9a-fA-F]{1,6})(\r\n|[ \t\r\n\u000C])?""")
+    private val css_char_escape = Regex("""\\([g-zG-Z\-])""")
+    private val css_bare_import = Regex("""@import\b[^;]*;?""", RegexOption.IGNORE_CASE)
+    private val css_any_image_set = Regex("""(?:-webkit-)?image-set\s*\([^)]*\)""", RegexOption.IGNORE_CASE)
+    private val css_any_cross_fade = Regex("""(?:-webkit-)?cross-fade\s*\([^)]*\)""", RegexOption.IGNORE_CASE)
+
+    private fun is_plain_css_letter(code: Int): Boolean =
+        (code in 'a'.code..'z'.code) || (code in 'A'.code..'Z'.code) || code == '-'.code
+
+    fun decode_css_escapes(css: String): String {
+        if (!css.contains('\\')) return css
+        val hex_decoded = css_hex_escape.replace(css) { m ->
+            val code = m.groupValues[1].toIntOrNull(16)
+            if (code != null && is_plain_css_letter(code)) code.toChar().toString() else m.value
+        }
+        return css_char_escape.replace(hex_decoded) { m -> m.groupValues[1] }
+    }
+
+    private data class CssUrlSpan(val start: Int, val end: Int, val target: String)
+
+    private fun css_url_spans(css: String): List<CssUrlSpan> {
+        val spans = mutableListOf<CssUrlSpan>()
+        var from = 0
+        while (from < css.length) {
+            val open = css_url_open.find(css, from) ?: break
+            var index = open.range.last + 1
+            while (index < css.length && css[index].isWhitespace()) index++
+            val quote = css.getOrNull(index)?.takeIf { it == '"' || it == '\'' }
+            val target = StringBuilder()
+            if (quote != null) {
+                index++
+                while (index < css.length && css[index] != quote) {
+                    if (css[index] == '\\' && index + 1 < css.length) {
+                        target.append(css[index + 1])
+                        index += 2
+                        continue
+                    }
+                    target.append(css[index])
+                    index++
+                }
+                if (index < css.length) index++
+                while (index < css.length && css[index] != ')') index++
+            } else {
+                while (index < css.length && css[index] != ')') {
+                    target.append(css[index])
+                    index++
+                }
+            }
+            val end = if (index < css.length) index + 1 else css.length
+            spans.add(CssUrlSpan(open.range.first, end, target.toString().trim()))
+            from = end
+        }
+        return spans
+    }
+
+    fun has_remote_css_url(css: String): Boolean {
+        val decoded = decode_css_escapes(strip_css_comments(css))
+        if (css_bare_import.containsMatchIn(decoded)) return true
+        if (css_any_image_set.containsMatchIn(decoded)) return true
+        if (css_any_cross_fade.containsMatchIn(decoded)) return true
+        return css_url_spans(decoded).any { !css_local_target.containsMatchIn(it.target) }
+    }
+
+    fun strip_remote_css_urls(css: String): String {
+        val decoded = decode_css_escapes(strip_css_comments(css))
+        val spans = css_url_spans(decoded)
+        val out = StringBuilder(decoded.length)
+        var cursor = 0
+        for (span in spans) {
+            out.append(decoded, cursor, span.start)
+            if (css_local_target.containsMatchIn(span.target)) {
+                out.append(decoded, span.start, span.end)
+            } else {
+                out.append("none")
+            }
+            cursor = span.end
+        }
+        out.append(decoded, cursor, decoded.length)
+        return out.toString()
+            .replace(css_any_image_set, "none")
+            .replace(css_any_cross_fade, "none")
+            .replace(css_bare_import, "")
+    }
 
     fun strip_css_comments(css: String): String {
         if (!css.contains("/*")) return css
@@ -327,15 +438,15 @@ object EmailHtmlSanitizer {
             }
         }
         for (el in doc.select("[style]")) {
-            val style = strip_css_comments(el.attr("style"))
-            if (css_remote_url.containsMatchIn(style)) {
-                el.attr("style", css_remote_url.replace(style, "none"))
+            val style = el.attr("style")
+            if (has_remote_css_url(style)) {
+                el.attr("style", strip_remote_css_urls(style))
                 apply_bg_placeholder(el)
             }
         }
         for (st in doc.select("style")) {
-            val css = strip_css_comments(st.data())
-            if (css_remote_url.containsMatchIn(css)) st.html(css_remote_url.replace(css, "none"))
+            val css = st.data()
+            if (has_remote_css_url(css)) st.html(strip_remote_css_urls(css))
         }
         return doc.body().html()
     }
@@ -557,7 +668,11 @@ object EmailHtmlSanitizer {
     private val css_webkit_image_set_regex = Regex("-webkit-image-set\\s*\\([^)]*\\)", RegexOption.IGNORE_CASE)
     private val css_cross_fade_regex = Regex("cross-fade\\s*\\([^)]*\\)", RegexOption.IGNORE_CASE)
     private val css_closing_tag_regex = Regex("</(style|script)", RegexOption.IGNORE_CASE)
-    private val dark_mode_media_regex = Regex("@media\\s*\\([^)]*prefers-color-scheme\\s*:\\s*dark[^)]*\\)\\s*\\{", RegexOption.IGNORE_CASE)
+    private const val media_keyword = "@media"
+    private const val max_css_sanitize_passes = 8
+    private val media_prelude_terminators = charArrayOf('{', ';')
+    private val dark_scheme_regex = Regex("prefers-color-scheme\\s*:\\s*dark", RegexOption.IGNORE_CASE)
+    private val media_not_regex = Regex("(^|[\\s(])not\\b", RegexOption.IGNORE_CASE)
 
     private fun neutralize_unterminated_comments(html: String): String {
         if (!html.contains("<!--")) return html
@@ -700,8 +815,23 @@ object EmailHtmlSanitizer {
         }
     }
 
-    private fun sanitize_style_value(css: String): String {
-        var out = strip_css_comments(css)
+    private fun sanitize_until_stable(css: String, pass: (String) -> String): String {
+        var current = css
+        repeat(max_css_sanitize_passes) {
+            val next = pass(current)
+            if (next == current) return next
+            current = next
+        }
+        return ""
+    }
+
+    private fun sanitize_style_value(css: String): String =
+        sanitize_until_stable(css) { sanitize_style_value_pass(it) }
+
+    private fun sanitize_style_value_pass(css: String): String {
+        var out = decode_css_escapes(strip_css_comments(css))
+        out = out.replace(css_any_image_set, "none")
+        out = out.replace(css_any_cross_fade, "none")
         out = out.replace("<", "")
         out = out.replace(css_expression_regex, "blocked(")
         out = out.replace(css_javascript_regex, "blocked:")
@@ -715,14 +845,17 @@ object EmailHtmlSanitizer {
 
     private val font_face_block = Regex("@font-face\\s*\\{[^}]*\\}", RegexOption.IGNORE_CASE)
 
-    private fun sanitize_css_block(css: String, options: SanitizeOptions = SanitizeOptions()): String {
-        var out = strip_css_comments(css)
+    private fun sanitize_css_block(css: String, options: SanitizeOptions = SanitizeOptions()): String =
+        sanitize_until_stable(css) { sanitize_css_block_pass(it, options) }
+
+    private fun sanitize_css_block_pass(css: String, options: SanitizeOptions): String {
+        var out = decode_css_escapes(strip_css_comments(css))
         if (options.block_remote_css) {
             out = out.replace(css_import_regex, "")
         }
         if (options.block_remote_fonts) {
             out = font_face_block.replace(out) { m ->
-                if (css_remote_url.containsMatchIn(m.value)) "" else m.value
+                if (css_url_spans(m.value).any { !css_local_target.containsMatchIn(it.target) }) "" else m.value
             }
         }
         out = out.replace(css_charset_regex, "")
@@ -744,23 +877,74 @@ object EmailHtmlSanitizer {
     }
 
     private fun strip_dark_mode_media(css: String): String {
-        var result = css
-        val pattern = dark_mode_media_regex
-        var match = pattern.find(result)
-        while (match != null) {
-            var depth = 1
-            var i = match.range.last + 1
-            while (i < result.length && depth > 0) {
-                when (result[i]) {
-                    '{' -> depth++
-                    '}' -> depth--
-                }
-                i++
+        val out = StringBuilder()
+        var cursor = 0
+        var search = 0
+        while (true) {
+            val at = css.indexOf(media_keyword, search, ignoreCase = true)
+            if (at < 0) break
+            val prelude_start = at + media_keyword.length
+            val prelude_end = css.indexOfAny(media_prelude_terminators, prelude_start)
+            if (prelude_end < 0) break
+            val body_start = prelude_end + 1
+            search = body_start
+            val next = css[prelude_start]
+            if (css[prelude_end] == ';' || next.isLetterOrDigit() || next == '_') continue
+            val queries = split_media_queries(css.substring(prelude_start, prelude_end))
+            val kept = queries.filterNot { requires_dark_scheme(it) }
+            if (kept.size == queries.size) continue
+            out.append(css, cursor, at)
+            if (kept.isEmpty()) {
+                cursor = css_block_end(css, body_start)
+                search = cursor
+            } else {
+                out.append("@media ").append(kept.joinToString(", ") { it.trim() }).append(" {")
+                cursor = body_start
             }
-            result = result.substring(0, match.range.first) + result.substring(i)
-            match = pattern.find(result, match.range.first)
         }
-        return result
+        out.append(css, cursor, css.length)
+        return out.toString()
+    }
+
+    private fun requires_dark_scheme(query: String): Boolean =
+        dark_scheme_regex.containsMatchIn(query) && !media_not_regex.containsMatchIn(query)
+
+    private fun split_media_queries(prelude: String): List<String> {
+        val parts = mutableListOf<String>()
+        var depth = 0
+        var start = 0
+        for (i in prelude.indices) {
+            when (prelude[i]) {
+                '(' -> depth++
+                ')' -> if (depth > 0) depth--
+                ',' -> if (depth == 0) {
+                    parts.add(prelude.substring(start, i))
+                    start = i + 1
+                }
+            }
+        }
+        parts.add(prelude.substring(start))
+        return parts
+    }
+
+    private fun css_block_end(css: String, body_start: Int): Int {
+        var depth = 1
+        var quote: Char? = null
+        var i = body_start
+        while (i < css.length) {
+            val c = css[i]
+            if (quote != null) {
+                if (c == '\\') i++ else if (c == quote) quote = null
+            } else {
+                when (c) {
+                    '"', '\'' -> quote = c
+                    '{' -> depth++
+                    '}' -> if (--depth == 0) return i + 1
+                }
+            }
+            i++
+        }
+        return css.length
     }
 
     fun rewrite_img_through_proxy(html: String, proxy_base: String, allow_external: Boolean): String {
@@ -776,7 +960,7 @@ object EmailHtmlSanitizer {
                 continue
             }
             if (src.startsWith(proxy_base)) continue
-            val encoded = java.net.URLEncoder.encode(src, "UTF-8")
+            val encoded = java.net.URLEncoder.encode(secure_image_url(src), "UTF-8")
             img.attr("src", "$proxy_base?url=$encoded")
         }
         return doc.body().html()

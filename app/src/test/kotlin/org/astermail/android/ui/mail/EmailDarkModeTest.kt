@@ -85,10 +85,11 @@ class EmailDarkModeTest {
     fun forced_css_strips_author_backgrounds_but_spares_image_backgrounds() {
         val css = forced_dark_mode_css("#8ab4f8", "#4b5563", "#9ca3af")
         assertTrue(css.contains("background-color:transparent!important"))
-        assertTrue(css.contains("td:not([style*=\"background-image\" i])"))
-        assertTrue(css.contains("table:not([style*=\"background-image\" i])"))
+        assertTrue(css.contains("td:not([style*=\"url(\" i])"))
+        assertTrue(css.contains("table:not([style*=\"url(\" i])"))
+        assertTrue(css.contains(":not([$BACKGROUND_IMAGE_ATTRIBUTE])"))
         assertTrue(css, css.contains("color:#8ab4f8!important"))
-        assertTrue(css.contains("html,body{background-color:transparent!important"))
+        assertTrue(css.contains("$DARK_PAGE_SELECTOR{background:transparent!important"))
     }
 
     private val newsletter =
@@ -119,7 +120,7 @@ class EmailDarkModeTest {
         )
         assertTrue(
             "forced dark must keep light body text: " + html,
-            html.contains("html,body{background-color:transparent!important;color:" + FORCED_DARK_INK),
+            html.contains("$DARK_PAGE_SELECTOR{background:transparent!important;color:" + FORCED_DARK_INK),
         )
     }
 
@@ -207,7 +208,52 @@ class EmailDarkModeTest {
         val dark = render(newsletter, forced = forces_dark_emails(true, theme_dark = true), theme_dark = true)
         assertFalse(light.contains("data-dark-force"))
         assertTrue(dark.contains("data-dark-force=\"1\""))
-        assertTrue(dark.contains("html,body{background-color:transparent!important;color:" + FORCED_DARK_INK))
+        assertTrue(dark.contains("$DARK_PAGE_SELECTOR{background:transparent!important;color:" + FORCED_DARK_INK))
+    }
+
+    private fun html_start_tag(html: String): String =
+        html.substringAfter("<!DOCTYPE html>").substringBefore("<head>")
+
+    @Test
+    fun an_email_declaring_only_light_keeps_its_light_page() {
+        for (declaration in listOf("only light", "light only", "ONLY  LIGHT !important")) {
+            val html = render(
+                "<style>:root{color-scheme: $declaration}</style><p>Plain text</p>",
+                forced = false,
+            )
+            assertTrue("$declaration must keep the white page: " + html_start_tag(html), html.contains("data-white=\"1\""))
+            assertFalse("$declaration must not be darkened: " + html_start_tag(html), html.contains("data-dark=\"1\""))
+        }
+    }
+
+    @Test
+    fun the_color_scheme_value_must_be_only_light_to_keep_the_page_light() {
+        val html = render("<style>:root{color-scheme: only lightish}</style><p>Plain text</p>", forced = false)
+        assertFalse(html_start_tag(html), html.contains("data-white=\"1\""))
+    }
+
+    @Test
+    fun forced_dark_sets_the_dark_scheme_on_the_root_element_itself() {
+        val html = render(
+            "<style>:root{color-scheme: only light !important}</style>" +
+                "<table width=\"100%\" bgcolor=\"#d3d5d9\"><tr><td><h2 style=\"color:#000000\">Digest</h2><p>Body</p></td></tr></table>",
+            forced = true,
+        )
+        assertTrue(html_start_tag(html), html_start_tag(html).contains("style=\"color-scheme:dark!important\""))
+    }
+
+    @Test
+    fun a_simple_dark_email_sets_the_dark_scheme_on_the_root_element_itself() {
+        val html = render("<style>:root{color-scheme: light}</style><p>Plain text</p>", forced = false)
+        assertTrue(html.contains("data-dark=\"1\""))
+        assertTrue(html_start_tag(html), html_start_tag(html).contains("style=\"color-scheme:dark!important\""))
+    }
+
+    @Test
+    fun a_white_page_does_not_get_the_dark_scheme() {
+        val html = render("<style>:root{color-scheme: only light}</style><p>Plain text</p>", forced = false)
+        assertFalse(html_start_tag(html), html_start_tag(html).contains("color-scheme"))
+        assertTrue(html_start_tag(html), html_start_tag(html).contains("style=\"background-color:transparent\""))
     }
 
     @Test

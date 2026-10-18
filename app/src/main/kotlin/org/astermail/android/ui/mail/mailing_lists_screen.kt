@@ -65,7 +65,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import org.astermail.android.design.aster_ripple
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -122,7 +122,11 @@ import org.astermail.android.design.components.AsterAlertDialog
 import org.astermail.android.design.components.AsterDivider
 import org.astermail.android.design.components.AsterIconButton
 import org.astermail.android.design.components.DialogConfirmStyle
+import org.astermail.android.security.safe_sender_name
+import org.astermail.android.settings.shared_settings_view_model
 import org.astermail.android.subscriptions.MailingListsViewModel
+import org.astermail.android.subscriptions.build_blocked_sender_index
+import org.astermail.android.subscriptions.without_blocked_senders
 import org.astermail.android.ui.common.chrome_surface
 import org.astermail.android.ui.common.page_surface
 
@@ -135,11 +139,16 @@ fun MailingListsScreen(
 ) {
     val vm: MailingListsViewModel = hiltViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
+    val settings_vm = shared_settings_view_model()
+    val settings_state by settings_vm.state.collectAsStateWithLifecycle()
     val colors = AsterMaterial.colors
     val context = LocalContext.current
     val density = LocalDensity.current
+    var blocked_requested by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
+        settings_vm.load_blocked_senders()
+        blocked_requested = true
         vm.load()
         vm.auto_scan_if_empty()
     }
@@ -165,8 +174,20 @@ fun MailingListsScreen(
     var confirm_single by remember { mutableStateOf<MailingListSubscription?>(null) }
     var confirm_bulk by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    val (active, unsubscribed) = remember(state.items) {
-        state.items.partition { it.status == "active" }
+    val blocked_pending = settings_state.blocked_senders.isEmpty() &&
+        (!blocked_requested || settings_state.blocked_senders_loading)
+    val blocked_index = remember(settings_state.blocked_senders) {
+        build_blocked_sender_index(settings_state.blocked_senders.map { it.address to it.is_domain })
+    }
+    val items = remember(state.items, blocked_index, blocked_pending) {
+        if (blocked_pending) {
+            emptyList()
+        } else {
+            without_blocked_senders(state.items, blocked_index) { it.sender_email }
+        }
+    }
+    val (active, unsubscribed) = remember(items) {
+        items.partition { it.status == "active" }
     }
     val visible = if (show_unsubscribed) unsubscribed else active
     val visible_ids = remember(visible) { visible.map { it.id }.toSet() }
@@ -363,7 +384,8 @@ fun MailingListsScreen(
                     active_count = active.size,
                     unsubscribed_count = unsubscribed.size,
                     email_count = state.stats?.total_emails_from_subscriptions
-                        ?: state.items.sumOf { it.email_count },
+                        ?.takeIf { items.size == state.items.size }
+                        ?: items.sumOf { it.email_count },
                     is_scanning = state.is_scanning,
                     modifier = Modifier.padding(horizontal = inbox_card_horizontal_margin),
                 )
@@ -388,7 +410,7 @@ fun MailingListsScreen(
                 Spacer(Modifier.height(AsterSpacing.md))
             }
             when {
-                (state.is_loading || state.is_scanning) && state.items.isEmpty() -> item(key = "loading") {
+                (state.is_loading || state.is_scanning || blocked_pending) && items.isEmpty() -> item(key = "loading") {
                     Box(
                         modifier = Modifier.fillMaxWidth().padding(AsterSpacing.xxl),
                         contentAlignment = Alignment.Center,
@@ -399,7 +421,7 @@ fun MailingListsScreen(
                         )
                     }
                 }
-                state.load_error != null && state.items.isEmpty() -> item(key = "load_error") {
+                state.load_error != null && items.isEmpty() -> item(key = "load_error") {
                     Box(modifier = Modifier.padding(horizontal = inbox_card_horizontal_margin)) {
                         Column {
                             org.astermail.android.ui.settings.detail.load_failed_card(
@@ -452,11 +474,11 @@ fun MailingListsScreen(
             }
         }
 
-        org.astermail.android.ui.common.fast_scroll_bar(
+        org.astermail.android.ui.common.vertical_scroll_bar(
             state = list_state,
             modifier = Modifier.align(Alignment.TopEnd),
-            top_padding = header_height_dp,
-            bottom_padding = if (selected_ids.isEmpty()) {
+            top_inset = header_height_dp,
+            bottom_inset = if (selected_ids.isEmpty()) {
                 AsterSpacing.lg + nav_bar_bottom
             } else {
                 88.dp + nav_bar_bottom
@@ -521,7 +543,7 @@ fun MailingListsScreen(
             title = stringResource(R.string.stop_sender_title),
             message = stringResource(
                 R.string.stop_sender_body,
-                target.sender_name.ifBlank { target.sender_email },
+                safe_sender_name(target.sender_name, target.sender_email).ifBlank { target.sender_email },
             ),
             confirm_label = stringResource(R.string.stop_sender_confirm),
             cancel_label = stringResource(R.string.cancel),
@@ -895,7 +917,7 @@ private fun subscription_row(
             .combinedClickable(
                 hapticFeedbackEnabled = false,
                 interactionSource = interaction_source,
-                indication = aster_ripple(),
+                indication = ripple(),
                 onClick = { if (selection_active) on_toggle_select() else on_open() },
                 onLongClick = {
                     if (haptic_enabled) {
@@ -939,7 +961,7 @@ private fun subscription_row(
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = item.sender_name.ifBlank { item.sender_email },
+                    text = safe_sender_name(item.sender_name, item.sender_email).ifBlank { item.sender_email },
                     color = colors.text_primary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1028,7 +1050,7 @@ private fun row_action_button(
             .clickable(
                 enabled = !is_loading,
                 interactionSource = interaction_source,
-                indication = aster_ripple(bounded = true, color = intent),
+                indication = ripple(bounded = true, color = intent),
                 onClick = on_click,
             ),
         contentAlignment = Alignment.Center,
