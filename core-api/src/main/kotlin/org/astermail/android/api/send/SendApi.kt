@@ -23,6 +23,7 @@ package org.astermail.android.api.send
 
 import io.ktor.client.call.body
 import io.ktor.client.plugins.timeout
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -127,6 +128,48 @@ data class ExternalSendResponse(
 )
 
 @Serializable
+data class QueueEmailRequest(
+    val to: List<String>,
+    val cc: List<String> = emptyList(),
+    val bcc: List<String> = emptyList(),
+    val subject: String,
+    val body: String,
+    val delay_seconds: Int,
+    val is_e2e_encrypted: Boolean = false,
+    val internal_encrypted_body: String? = null,
+    val recipient_bodies: Map<String, String>? = null,
+    val encrypted_envelope: String,
+    val envelope_nonce: String,
+    val folder_token: String? = null,
+    val thread_token: String? = null,
+    val sender_email: String? = null,
+    val sender_alias_hash: String? = null,
+    val sender_display_name: String? = null,
+    val expires_at: String? = null,
+    val attachments: List<SendAttachmentPayload> = emptyList(),
+    val forward_original_mail_id: String? = null,
+    val signed_mime: String? = null,
+    val signed_mime_signature: String? = null,
+    val signed_mime_micalg: String? = null,
+    val client_send_id: String? = null,
+)
+
+@Serializable
+data class QueueEmailResponse(
+    val queue_id: String,
+    val scheduled_send_time: String? = null,
+    val can_cancel_until: String? = null,
+    val delay_seconds: Int = 0,
+)
+
+@Serializable
+data class QueueStatusResponse(
+    val queue_id: String = "",
+    val status: String = "",
+    val mail_item_id: String? = null,
+)
+
+@Serializable
 data class ReactRequest(
     val target_message_id: String,
     val message_group_id: String? = null,
@@ -164,11 +207,26 @@ data class UnreactResponse(
     val message: String = "",
 )
 
+@Serializable
+data class ReactionsSeenRequest(
+    val thread_token: String? = null,
+    val target_message_ids: List<String> = emptyList(),
+)
+
+@Serializable
+data class ReactionsSeenResponse(
+    val success: Boolean = false,
+    val updated: Int = 0,
+)
+
 interface SendApi {
     suspend fun send_simple(request: SimpleSendRequest): SimpleSendResponse
     suspend fun send_external(request: ExternalSendRequest): ExternalSendResponse
+    suspend fun queue_email(request: QueueEmailRequest): QueueEmailResponse
+    suspend fun queue_status(queue_id: String): QueueStatusResponse
     suspend fun react(request: ReactRequest): ReactResponse
     suspend fun unreact(request: UnreactRequest): UnreactResponse
+    suspend fun mark_reactions_seen(request: ReactionsSeenRequest): ReactionsSeenResponse
 }
 
 private class StreamedJsonContent(private val file: java.io.File) : OutgoingContent.WriteChannelContent() {
@@ -233,6 +291,16 @@ class SendApiImpl(private val client: ApiClient) : SendApi {
         return post_streamed("${client.base_url}$base/external", request)
     }
 
+    override suspend fun queue_email(request: QueueEmailRequest): QueueEmailResponse {
+        return post_streamed("${client.base_url}/api/mail/v1/undo_send/queue", request)
+    }
+
+    override suspend fun queue_status(queue_id: String): QueueStatusResponse {
+        val encoded = java.net.URLEncoder.encode(queue_id, "UTF-8")
+        val response = client.http.get("${client.base_url}/api/mail/v1/undo_send/$encoded/status")
+        return decode_or_throw(response)
+    }
+
     override suspend fun react(request: ReactRequest): ReactResponse {
         val response = client.http.post("${client.base_url}/api/mail/v1/react") {
             timeout {
@@ -248,6 +316,15 @@ class SendApiImpl(private val client: ApiClient) : SendApi {
 
     override suspend fun unreact(request: UnreactRequest): UnreactResponse {
         val response = client.http.post("${client.base_url}/api/mail/v1/react/remove") {
+            contentType(ContentType.Application.Json)
+            client.get_csrf()?.let { header("X-CSRF-Token", it) }
+            setBody(request)
+        }
+        return decode_or_throw(response)
+    }
+
+    override suspend fun mark_reactions_seen(request: ReactionsSeenRequest): ReactionsSeenResponse {
+        val response = client.http.post("${client.base_url}/api/mail/v1/react/seen") {
             contentType(ContentType.Application.Json)
             client.get_csrf()?.let { header("X-CSRF-Token", it) }
             setBody(request)

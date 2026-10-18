@@ -243,6 +243,7 @@ data class CustomDomainAddressInfo(
     val is_enabled: Boolean = true,
     val profile_picture: String? = null,
     val decryption_failed: Boolean = false,
+    val created_at: String = "",
 ) {
     val address: String get() = when {
         decryption_failed -> if (domain_name.isNotBlank()) "@$domain_name" else id
@@ -581,7 +582,45 @@ data class DnsRecord(
     val purpose: String = "",
     val priority: Int? = null,
     val required: Boolean = false,
+    val caveat_key: String? = null,
 )
+
+@Serializable
+data class DomainCheck(
+    val key: String = "",
+    val outcome: String = "",
+    val reason: String? = null,
+    val detail: String? = null,
+    val hint: String? = null,
+)
+
+@Serializable
+data class DomainHealth(
+    val domain_id: String = "",
+    val domain_name: String = "",
+    val status: String = "",
+    val health_status: String = "",
+    val severity: String = "",
+    val receiving_mail: Boolean = false,
+    val sending_trusted: Boolean = false,
+    val checks: List<DomainCheck> = emptyList(),
+    val reasons: List<String> = emptyList(),
+    val dmarc_policy: String? = null,
+    val dkim_can_shorten: Boolean = false,
+    val checked_at: String = "",
+    val cached: Boolean = false,
+)
+
+const val DKIM_KEY_SIZE_COMPACT = "compact"
+const val DKIM_KEY_SIZE_STANDARD = "standard"
+
+@Serializable
+data class DkimRotateRequest(
+    val key_size: String,
+)
+
+fun dkim_rotate_request(key_size: String?): DkimRotateRequest? =
+    key_size?.takeIf { it.isNotBlank() }?.let { DkimRotateRequest(it) }
 
 @Serializable
 data class DomainVerificationResult(
@@ -607,6 +646,7 @@ data class DkimRotationResponse(
     val public_key: String = "",
     val dns_record: DnsRecord? = null,
     val dns_auto_published: Boolean = false,
+    val key_bits: Int = 0,
 )
 
 @Serializable
@@ -669,16 +709,6 @@ data class FeedbackRequest(
 @Serializable
 data class RecoveryKeyResponse(
     val recovery_key: String? = null,
-)
-
-@Serializable
-data class ConnectionPreference(
-    val method: String? = null,
-)
-
-@Serializable
-data class UpdateConnectionPreferenceRequest(
-    val method: String,
 )
 
 @Serializable
@@ -745,7 +775,8 @@ interface SettingsApi {
     suspend fun delete_domain(domain_id: String)
     suspend fun trigger_domain_verification(domain_id: String): DomainVerificationResult
     suspend fun get_dns_records(domain_id: String): DnsRecordsResponse
-    suspend fun rotate_dkim(domain_id: String): DkimRotationResponse
+    suspend fun rotate_dkim(domain_id: String, key_size: String? = null): DkimRotationResponse
+    suspend fun get_domain_health(domain_id: String): DomainHealth
     suspend fun update_domain(domain_id: String, request: UpdateDomainRequest): CustomDomain
     suspend fun get_storage_overview(): StorageOverview
     suspend fun get_subscription(): SubscriptionInfo
@@ -763,8 +794,6 @@ interface SettingsApi {
     suspend fun list_smtp_tokens(): ListSmtpTokensResponse
     suspend fun create_smtp_token(request: CreateSmtpTokenRequest): CreateSmtpTokenResponse
     suspend fun revoke_smtp_token(token_id: String)
-    suspend fun get_connection_preference(): ConnectionPreference
-    suspend fun update_connection_preference(method: String)
 }
 
 class SettingsApiImpl(private val client: ApiClient) : SettingsApi {
@@ -1175,11 +1204,18 @@ class SettingsApiImpl(private val client: ApiClient) : SettingsApi {
         return decode_or_throw(response)
     }
 
-    override suspend fun rotate_dkim(domain_id: String): DkimRotationResponse {
+    override suspend fun rotate_dkim(domain_id: String, key_size: String?): DkimRotationResponse {
+        val request = dkim_rotate_request(key_size)
         val response = client.http.post("${client.base_url}/api/addresses/v1/domains/$domain_id/dkim/rotate") {
             contentType(ContentType.Application.Json)
             client.get_csrf()?.let { header("X-CSRF-Token", it) }
+            if (request != null) setBody(request)
         }
+        return decode_or_throw(response)
+    }
+
+    override suspend fun get_domain_health(domain_id: String): DomainHealth {
+        val response = client.http.get("${client.base_url}/api/addresses/v1/domains/$domain_id/health")
         return decode_or_throw(response)
     }
 
@@ -1329,22 +1365,6 @@ class SettingsApiImpl(private val client: ApiClient) : SettingsApi {
             contentType(ContentType.Application.Json)
             client.get_csrf()?.let { header("X-CSRF-Token", it) }
             setBody(request)
-        }
-        if (response.status.value !in 200..299) {
-            throw client.map_http_status(response.status.value, "")
-        }
-    }
-
-    override suspend fun get_connection_preference(): ConnectionPreference {
-        val response = client.http.get("${client.base_url}/api/settings/v1/preferences/connection")
-        return decode_or_throw(response)
-    }
-
-    override suspend fun update_connection_preference(method: String) {
-        val response = client.http.put("${client.base_url}/api/settings/v1/preferences/connection") {
-            contentType(ContentType.Application.Json)
-            client.get_csrf()?.let { header("X-CSRF-Token", it) }
-            setBody(UpdateConnectionPreferenceRequest(method))
         }
         if (response.status.value !in 200..299) {
             throw client.map_http_status(response.status.value, "")

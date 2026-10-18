@@ -25,6 +25,7 @@ import app.cash.turbine.test
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.verify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -53,7 +54,6 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MailViewModelTest {
-
     private val dispatcher = StandardTestDispatcher()
     private lateinit var context: android.content.Context
     private lateinit var repository: MailRepository
@@ -107,6 +107,7 @@ class MailViewModelTest {
             search_index_manager,
             folder_cache_store,
             identity_pins,
+            mockk(relaxed = true),
             mockk(relaxed = true),
             mockk(relaxed = true),
             mockk(relaxed = true),
@@ -896,6 +897,79 @@ class MailViewModelTest {
     }
 
     @Test
+    fun `snooze_bulk sends the whole selection in one repository call`() = runTest {
+        val page = fake_inbox_page(5)
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(page)
+        val bulk_calls = mutableListOf<List<String>>()
+        var single_calls = 0
+        coEvery { repository.snooze_bulk(any(), any()) } answers {
+            bulk_calls.add(firstArg())
+            Result.success(MailRepository.SnoozeBulkOutcome())
+        }
+        coEvery { repository.snooze(any(), any()) } answers {
+            single_calls += 1
+            Result.success(Unit)
+        }
+
+        vm.load_inbox()
+        advanceUntilIdle()
+
+        val ids = listOf("id_1", "id_2", "id_3")
+        vm.snooze_bulk(ids, "2026-09-03T09:00:00Z", "Tomorrow")
+        advanceUntilIdle()
+
+        assertFalse(vm.inbox_state.value.items.any { it.id in ids })
+        assertEquals(listOf(ids), bulk_calls)
+        assertEquals(0, single_calls)
+    }
+
+    @Test
+    fun `snooze_bulk restores only the ids the server rejected`() = runTest {
+        val page = fake_inbox_page(5)
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(page)
+        coEvery { repository.snooze_bulk(any(), any()) } returns
+            Result.success(MailRepository.SnoozeBulkOutcome(failed_ids = setOf("id_2")))
+
+        vm.load_inbox()
+        advanceUntilIdle()
+
+        vm.snooze_bulk(listOf("id_1", "id_2", "id_3"), "2026-09-03T09:00:00Z", "Tomorrow")
+        advanceUntilIdle()
+
+        val remaining = vm.inbox_state.value.items.map { it.id }
+        assertTrue("id_2" in remaining)
+        assertFalse("id_1" in remaining)
+        assertFalse("id_3" in remaining)
+    }
+
+    @Test
+    fun `unsnooze_bulk sends the whole selection in one repository call`() = runTest {
+        val page = fake_inbox_page(5)
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(page)
+        val bulk_calls = mutableListOf<List<String>>()
+        var single_calls = 0
+        coEvery { repository.unsnooze_bulk(any()) } answers {
+            bulk_calls.add(firstArg())
+            Result.success(emptySet())
+        }
+        coEvery { repository.unsnooze(any()) } answers {
+            single_calls += 1
+            Result.success(Unit)
+        }
+
+        vm.load_inbox()
+        advanceUntilIdle()
+
+        val ids = listOf("id_1", "id_2", "id_3")
+        vm.unsnooze_bulk(ids)
+        advanceUntilIdle()
+
+        assertFalse(vm.inbox_state.value.items.any { it.id in ids })
+        assertEquals(listOf(ids), bulk_calls)
+        assertEquals(0, single_calls)
+    }
+
+    @Test
     fun `toggle_star flips star state and calls repository`() = runTest {
         val page = fake_inbox_page(2)
         coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(page)
@@ -1300,6 +1374,7 @@ class MailViewModelTest {
                 sender_email = any(),
                 to = any(),
                 cc = any(),
+                queue_offline = any(),
             )
         } returns Result.success("draft_123")
 
@@ -1325,6 +1400,7 @@ class MailViewModelTest {
                 draft_type = "reply",
                 reply_to_id = "msg_1",
                 thread_token = "thread_1",
+                queue_offline = any(),
             )
         } returns Result.success("draft_456")
 
@@ -1348,6 +1424,7 @@ class MailViewModelTest {
                 sender_email = any(),
                 to = any(),
                 cc = any(),
+                queue_offline = any(),
             )
         } returns Result.failure(RuntimeException("draft save failed"))
 
@@ -2057,7 +2134,6 @@ class MailViewModelTest {
             raw_item = mockk(relaxed = true),
         )
 
-        // Oldest to newest: a(01) b(02) c(03) d(04) e(05).
         val a = item("a", 1)
         val b = item("b", 2)
         val c = item("c", 3)
@@ -2071,11 +2147,6 @@ class MailViewModelTest {
         advanceUntilIdle()
         assertEquals(listOf("e", "d", "c", "b", "a"), vm.inbox_state.value.items.map { it.id })
 
-        // c is archived out-of-band (e.g. from the web client). The server's fresh page
-        // correctly omits it, but this device's in-memory list still holds it with
-        // is_archived = false. The page is a partial window (has_more = true) whose
-        // oldest item is b, so c falls inside the window and must be dropped, while
-        // a is older than the window and must be carried forward.
         val revalidate_page = InboxPage(listOf(e, d, b), has_more = true, next_cursor = "rc1", total = 4)
         coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(revalidate_page)
 
@@ -2172,6 +2243,7 @@ class MailViewModelTest {
             search_index_manager,
             folder_cache_store,
             identity_pins,
+            mockk(relaxed = true),
             mockk(relaxed = true),
             mockk(relaxed = true),
             mockk(relaxed = true),
@@ -2851,5 +2923,101 @@ class MailViewModelTest {
         assertTrue(vm.inbox_state.value.items.none { it.is_read })
         io.mockk.unmockkStatic(Dispatchers::class)
         coVerify(exactly = 0) { repository.mark_read("id_1", true, any()) }
+    }
+    private fun rows_in_category(
+        prefix: String,
+        count: Int,
+        category: String,
+        day: Int,
+        has_more: Boolean,
+        next_cursor: String?,
+    ): InboxPage {
+        val base = fake_inbox_page(count)
+        return base.copy(
+            items = base.items.mapIndexed { i, item ->
+                item.copy(
+                    id = "${prefix}_$i",
+                    thread_token = "${prefix}_thread_$i",
+                    category = category,
+                    timestamp = "2026-04-%02dT10:%02d:00Z".format(day, 59 - i),
+                )
+            },
+            has_more = has_more,
+            next_cursor = next_cursor,
+        )
+    }
+
+    @Test
+    fun `removing custom categories replaces rows still sorted by the old categories`() = runTest {
+        val old_rows = rows_in_category("old", 30, "custom:politics", day = 20, has_more = true, next_cursor = "c1")
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(old_rows)
+        vm.load_inbox()
+        advanceUntilIdle()
+        assertEquals(30, vm.inbox_state.value.items.size)
+
+        val fresh = rows_in_category("fresh", 3, "promotions", day = 26, has_more = true, next_cursor = "c2")
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(fresh)
+        every { repository.set_custom_categories(any()) } returns true
+        every { repository.custom_categories_fingerprint } returns 1
+
+        vm.set_custom_categories(emptyList())
+        advanceUntilIdle()
+
+        val items = vm.inbox_state.value.items
+        assertEquals(fresh.items.map { it.id }, items.map { it.id })
+        assertTrue(items.none { it.category.startsWith("custom:") })
+        assertEquals("c2", vm.inbox_state.value.next_cursor)
+        verify { search_index_manager.expire_inbox_sync() }
+        verify { folder_cache_store.set_categories_signature("1") }
+    }
+
+    @Test
+    fun `a disk cache saved under other category rules is replaced at startup`() = runTest {
+        var clears = 0
+        coEvery { folder_cache_store.clear_all() } coAnswers { clears++ }
+        val old_rows = rows_in_category("old", 30, "custom:politics", day = 20, has_more = true, next_cursor = "c1")
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(old_rows)
+        vm.load_inbox()
+        advanceUntilIdle()
+
+        val fresh = rows_in_category("fresh", 3, "updates", day = 26, has_more = true, next_cursor = "c2")
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } returns Result.success(fresh)
+        every { repository.set_custom_categories(any()) } returns false
+        every { repository.custom_categories_fingerprint } returns 5
+        every { folder_cache_store.categories_signature() } returns "9"
+
+        vm.set_custom_categories(emptyList())
+        advanceUntilIdle()
+
+        assertEquals(fresh.items.map { it.id }, vm.inbox_state.value.items.map { it.id })
+        assertEquals(1, clears)
+        verify { search_index_manager.expire_inbox_sync() }
+        verify { folder_cache_store.set_categories_signature("5") }
+    }
+
+    @Test
+    fun `unchanged category rules with a matching disk cache keep the list`() = runTest {
+        var clears = 0
+        coEvery { folder_cache_store.clear_all() } coAnswers { clears++ }
+        var fetches = 0
+        val rows = rows_in_category("kept", 30, "primary", day = 20, has_more = true, next_cursor = "c1")
+        coEvery { repository.fetch_inbox(any(), any(), any(), any()) } coAnswers {
+            fetches++
+            Result.success(rows)
+        }
+        vm.load_inbox()
+        advanceUntilIdle()
+
+        every { repository.set_custom_categories(any()) } returns false
+        every { repository.custom_categories_fingerprint } returns 5
+        every { folder_cache_store.categories_signature() } returns "5"
+
+        vm.set_custom_categories(emptyList())
+        advanceUntilIdle()
+
+        assertEquals(30, vm.inbox_state.value.items.size)
+        assertEquals(0, clears)
+        verify(exactly = 0) { search_index_manager.expire_inbox_sync() }
+        assertEquals(1, fetches)
     }
 }

@@ -21,6 +21,7 @@
 
 package org.astermail.android.ui.mail
 
+import org.astermail.android.ui.common.vertical_scroll_with_indicator
 import compose.icons.TablerIcons
 import kotlinx.coroutines.CancellationException
 import org.astermail.android.design.auto_mirrored
@@ -81,6 +82,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.lazy.LazyColumn
@@ -97,9 +100,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -114,8 +120,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
@@ -124,12 +130,18 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.TransformOrigin
@@ -141,6 +153,8 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.roundToIntRect
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Dp
@@ -175,9 +189,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.constrainWidth
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import org.astermail.android.R
 import org.astermail.android.looks_encrypted
+import org.astermail.android.labels.as_conversation_member
 import org.astermail.android.subscriptions.MailingListsViewModel
 import org.astermail.android.ui.common.TopToastState
 import org.astermail.android.ui.common.app_toast
@@ -192,6 +211,10 @@ import org.astermail.android.design.field_surface_color
 import org.astermail.android.design.disabled_surface_color
 import org.astermail.android.design.components.shimmer
 import org.astermail.android.design.aster_reduce_motion
+import org.astermail.android.ui.common.horizontal_pan_signal
+import org.astermail.android.ui.common.horizontal_scroll_indicator
+import org.astermail.android.ui.common.local_horizontal_pan_signal
+import org.astermail.android.ui.common.vertical_scroll_bar
 import org.astermail.android.design.AsterSpacing
 import org.astermail.android.design.components.AsterDivider
 import org.astermail.android.design.components.AsterDragHandle
@@ -276,14 +299,10 @@ internal fun plain_text_fallback_document(raw: String, bg_hex: String, fg_hex: S
         "<div id=\"m\">" + plain_text_fallback_body(raw) + "</div></body></html>"
 
 private const val BODY_PENDING_TIMEOUT_MS = 12_000L
+private const val SLOW_LINK_BODY_PENDING_TIMEOUT_MS = 65_000L
 
 private val EXTERNAL_RESOURCE_PATTERN = Regex(
     """(?:src\s*=\s*["']https?://|background\s*=\s*["']https?://|url\s*\(\s*["']?https?://|@font-face)""",
-    RegexOption.IGNORE_CASE,
-)
-
-private val IMG_TAG_PATTERN = Regex(
-    """<img\b[^>]*\bsrc\s*=\s*["']https?://[^"']+["'][^>]*>""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -313,7 +332,6 @@ internal data class ExternalContentCounts(
 
 private const val EXTERNAL_ITEM_LIST_CAP = 60
 
-private val SRC_URL_PATTERN = Regex("""(?<![-\w])src\s*=\s*["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
 private val HREF_URL_PATTERN = Regex("""(?<![-\w])href\s*=\s*["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
 private val FONT_URL_PATTERN = Regex("""url\s*\(\s*["']?(https?://[^"')]+)""", RegexOption.IGNORE_CASE)
 
@@ -335,33 +353,13 @@ private fun external_display_url(url: String): String {
     }
 }
 
-private val IMG_WIDTH_PATTERN = Regex("""width\s*=\s*["']?(\d+)""", RegexOption.IGNORE_CASE)
-
-private val IMG_HEIGHT_PATTERN = Regex("""height\s*=\s*["']?(\d+)""", RegexOption.IGNORE_CASE)
-
-private fun count_external_content(html: String): ExternalContentCounts {
-    var images = 0
-    var trackers = 0
+internal fun count_external_content(html: String, report: EmailHtmlSanitizer.TrackerReport): ExternalContentCounts {
     val items = mutableListOf<ExternalContentItem>()
-    IMG_TAG_PATTERN.findAll(html).forEach { match ->
-        val tag = match.value
-        val width_match = IMG_WIDTH_PATTERN.find(tag)
-        val height_match = IMG_HEIGHT_PATTERN.find(tag)
-        val w = width_match?.groupValues?.get(1)?.toIntOrNull()
-        val h = height_match?.groupValues?.get(1)?.toIntOrNull()
-        val is_tracker = w != null && h != null && w <= 2 && h <= 2
-        if (is_tracker) trackers++ else images++
-        if (items.size < EXTERNAL_ITEM_LIST_CAP) {
-            val url = SRC_URL_PATTERN.find(tag)?.groupValues?.get(1)
-            if (!url.isNullOrBlank()) {
-                items.add(
-                    ExternalContentItem(
-                        if (is_tracker) ExternalContentType.tracker else ExternalContentType.image,
-                        url,
-                    ),
-                )
-            }
-        }
+    for (url in report.image_urls) {
+        if (items.size < EXTERNAL_ITEM_LIST_CAP) items.add(ExternalContentItem(ExternalContentType.image, url))
+    }
+    for (url in report.pixel_urls) {
+        if (items.size < EXTERNAL_ITEM_LIST_CAP) items.add(ExternalContentItem(ExternalContentType.tracker, url))
     }
     val fonts = FONT_FACE_PATTERN.findAll(html).count()
     val css = LINK_STYLESHEET_PATTERN.findAll(html).count()
@@ -380,8 +378,22 @@ private fun count_external_content(html: String): ExternalContentCounts {
             }
         }
     }
-    return ExternalContentCounts(images, trackers, fonts, css, items)
+    return ExternalContentCounts(report.image_count, report.pixel_count, fonts, css, items)
 }
+
+internal data class MessageContentAnalysis(
+    val tracker_report: EmailHtmlSanitizer.TrackerReport = EmailHtmlSanitizer.TrackerReport(),
+    val external_counts: ExternalContentCounts = ExternalContentCounts(0, 0, 0, 0),
+)
+
+internal fun analyze_message_content(html: String?): MessageContentAnalysis {
+    val report = EmailHtmlSanitizer.analyze_trackers(html)
+    val counts = if (html != null) count_external_content(html, report) else ExternalContentCounts(0, 0, 0, 0)
+    return MessageContentAnalysis(report, counts)
+}
+
+internal fun needs_cached_translation_source(current: String?, translate_active: Boolean): Boolean =
+    translate_active && current == null
 
 private val PROXY_CSS_URL_PATTERN = Regex(
     """(url\(\s*["']?)((?:https?:)?//[^"')\s]+)(["']?\s*\))""",
@@ -406,6 +418,9 @@ internal fun trim_email_runon(address: String): String {
     return address.substring(0, at + 1) + domain.substring(0, dot + 1) + tld
 }
 
+internal fun secure_image_url(url: String): String =
+    if (url.startsWith("http://", ignoreCase = true)) "https://" + url.substring(7) else url
+
 private fun is_proxyable_url(value: String): Boolean {
     val lower = value.trim().lowercase()
     return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("//")
@@ -419,7 +434,7 @@ internal fun proxy_external_urls(html: String, proxy_base: String): String {
             .replace("&#38;", "&")
             .replace("&#x26;", "&")
             .trim()
-        val absolute = if (url.startsWith("//")) "https:$url" else url
+        val absolute = secure_image_url(if (url.startsWith("//")) "https:$url" else url)
         if (absolute.startsWith(proxy_base)) return absolute
         if (absolute.startsWith(INLINE_IMAGE_URL_PREFIX)) return absolute
         return proxy_base + java.net.URLEncoder.encode(absolute, "UTF-8")
@@ -583,6 +598,7 @@ fun MailDetailScreen(
     val message_reactions by mail_vm.message_reactions.collectAsStateWithLifecycle()
     val decrypt_retry_active by mail_vm.decrypt_retry_active.collectAsStateWithLifecycle()
     val identity_changes by mail_vm.identity_changes.collectAsStateWithLifecycle()
+    val unauthenticated_message_ids by mail_vm.unauthenticated_message_ids.collectAsStateWithLifecycle()
     val identity_changed_senders = remember(identity_changes) {
         identity_changes.mapNotNull { it.sender_email.trim().lowercase().takeIf { e -> e.isNotBlank() } }.toSet()
     }
@@ -596,6 +612,8 @@ fun MailDetailScreen(
     LaunchedEffect(email_id) {
         mail_vm.load_thread(email_id)
     }
+
+    failed_send_dialog(mail_vm)
 
     val thread_matches_email = thread_state.item?.id == email_id ||
         thread_state.messages.any { it.id == email_id }
@@ -749,10 +767,14 @@ fun MailDetailScreen(
     var pending_block_sender by remember { mutableStateOf<String?>(null) }
     var pending_delete_permanent by remember { mutableStateOf(false) }
     var profile_sender by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var profile_sender_trust by remember { mutableStateOf<org.astermail.android.security.SenderTrust?>(null) }
     var show_snooze_sheet by remember { mutableStateOf(false) }
     var show_folder_sheet by remember { mutableStateOf(false) }
     var show_label_sheet by remember { mutableStateOf(false) }
+    var show_category_sheet by remember { mutableStateOf(false) }
+    val categories_enabled = settings_state.preferences?.inbox_categories_enabled ?: true
     var action_target_id by remember { mutableStateOf<String?>(null) }
+    var action_menu_anchor by remember { mutableStateOf<IntRect?>(null) }
 
     var show_encryption_dropdown by remember { mutableStateOf(false) }
     var hidden_group_revealed by remember(email_id) { mutableStateOf(false) }
@@ -928,6 +950,7 @@ fun MailDetailScreen(
     }
 
     val list_state = rememberLazyListState()
+    val pan_signal = remember { horizontal_pan_signal() }
     val show_topbar_subject by remember {
         derivedStateOf { list_state.firstVisibleItemIndex > 0 || list_state.firstVisibleItemScrollOffset > 80 }
     }
@@ -969,21 +992,20 @@ fun MailDetailScreen(
         }
     }
 
+    batch_action_toast(mail_vm)
+
     LaunchedEffect(mail_vm) {
         mail_vm.toast_events.collect { evt ->
-            if (evt.on_undo != null) {
-                org.astermail.android.ui.common.app_toast.show(
-                    org.astermail.android.ui.common.TopToastState(
-                        message = evt.message,
-                        undo_label = evt.undo_label,
-                        on_undo = evt.on_undo,
-                        duration_ms = evt.duration_ms,
-                        on_timeout = evt.on_timeout,
-                    ),
-                )
-            } else {
-                show_toast(evt.message)
-            }
+            org.astermail.android.ui.common.app_toast.show(
+                org.astermail.android.ui.common.TopToastState(
+                    message = evt.message,
+                    undo_label = evt.undo_label,
+                    on_undo = evt.on_undo,
+                    duration_ms = evt.duration_ms,
+                    on_timeout = evt.on_timeout,
+                    key = evt.id,
+                ),
+            )
         }
     }
 
@@ -1163,6 +1185,17 @@ fun MailDetailScreen(
                             settings_vm.load_tags()
                             show_label_sheet = true
                         }
+                        if (can_move_to_category(api_item, categories_enabled)) {
+                            detail_menu_action(
+                                icon = TablerIcons.LayoutGrid,
+                                text = stringResource(R.string.move_to_category),
+                                tint = colors.text_primary,
+                                test_tag = "move_to_category",
+                            ) {
+                                show_topbar_menu = false
+                                show_category_sheet = true
+                            }
+                        }
                         detail_menu_action(
                             icon = TablerIcons.Printer,
                             text = stringResource(R.string.print),
@@ -1218,7 +1251,7 @@ fun MailDetailScreen(
                         }
                         detail_menu_divider()
                         detail_menu_action(
-                            icon = TablerIcons.AlertOctagon,
+                            icon = spam_action_icon(is_spam),
                             text = if (is_spam) stringResource(R.string.swipe_not_spam) else stringResource(R.string.report_spam),
                             tint = if (is_spam) colors.accent_blue else colors.danger,
                         ) {
@@ -1302,10 +1335,12 @@ fun MailDetailScreen(
                     .chrome_surface(colors)
                     .clipToBounds(),
             ) {
+            CompositionLocalProvider(local_horizontal_pan_signal provides pan_signal) {
             if (email != null) LazyColumn(
                 state = list_state,
                 modifier = Modifier
                     .fillMaxSize()
+                    .horizontal_scroll_indicator(pan_signal, bottom_inset = bottom_bar_height)
                     .detail_content_handoff(email_id, detail_phase)
                     .clipToBounds()
                     .pointerInput(on_next, on_previous) {
@@ -1337,7 +1372,12 @@ fun MailDetailScreen(
                 item(key = "subject_header") {
                     var subject_expanded by remember(subject_text) { mutableStateOf(false) }
                     var subject_truncated by remember(subject_text) { mutableStateOf(false) }
-                    val applied_tag_tokens = api_item?.raw_item?.tag_tokens ?: emptyList()
+                    val applied_tag_tokens = remember(api_item, inbox_state_for_folder.items) {
+                        org.astermail.android.labels.conversation_tag_tokens(
+                            api_item?.as_conversation_member(),
+                            inbox_state_for_folder.items.map { it.as_conversation_member() },
+                        )
+                    }
                     val settings_state_now by settings_vm.state.collectAsStateWithLifecycle()
                     val applied_tags = remember(applied_tag_tokens, settings_state_now.tags) {
                         applied_tag_tokens.mapNotNull { token ->
@@ -1471,6 +1511,7 @@ fun MailDetailScreen(
                             identity_changed = identity_changed_senders.contains(
                                 msg.sender_email.trim().lowercase(),
                             ),
+                            sender_unauthenticated = msg.id in unauthenticated_message_ids,
                             on_acknowledge_identity = {
                                 mail_vm.acknowledge_identity_change(msg.sender_email)
                             },
@@ -1560,14 +1601,16 @@ fun MailDetailScreen(
                                 anchor_toggle(msg.id)
                                 user_expanded_ids.value = current_expanded_ids - msg.id
                             },
+                            on_sender_trust = { tapped_trust -> profile_sender_trust = tapped_trust },
                             on_sender_tap = { email, name ->
                                 profile_sender = email to name
                             },
                             on_reply = { on_reply(msg.id, thread_ghost_email) },
                             on_reply_all = { on_reply_all(msg.id, thread_ghost_email) },
                             on_forward = { on_forward(msg.id, thread_ghost_email) },
-                            on_more = {
+                            on_more = { bounds ->
                                 action_target_id = msg.id
+                                action_menu_anchor = bounds.takeUnless { it == IntRect.Zero }
                                 show_action_sheet = true
                             },
                             on_attachment_tap = { att ->
@@ -1645,6 +1688,12 @@ fun MailDetailScreen(
 
                 item { Spacer(Modifier.height(bottom_bar_height + 16.dp)) }
             }
+            }
+            if (email != null) vertical_scroll_bar(
+                state = list_state,
+                modifier = Modifier.align(Alignment.TopEnd),
+                bottom_inset = bottom_bar_height,
+            )
             detail_skeleton_layer(
                 phase = detail_phase,
                 message_count = expected_message_count,
@@ -1681,7 +1730,8 @@ fun MailDetailScreen(
                     .navigationBarsPadding(),
             ) {
                 if (!colors.is_glass) AsterDivider(modifier = Modifier.fillMaxWidth())
-                val latest_restriction = reaction_restriction_for(latest_msg)
+                val react_target = messages.lastOrNull { reaction_restriction_for(it) == null } ?: latest_msg
+                val latest_restriction = reaction_restriction_for(react_target)
                 LaunchedEffect(latest_restriction) {
                     if (latest_restriction != null) reaction_picker_open = false
                 }
@@ -1690,7 +1740,7 @@ fun MailDetailScreen(
                         visible = reaction_picker_open && latest_restriction == null,
                         on_pick = { emoji ->
                             reaction_picker_open = false
-                            val blocked = reaction_restriction_for(latest_msg)
+                            val blocked = reaction_restriction_for(react_target)
                             if (blocked != null) {
                                 show_toast(
                                     context.getString(
@@ -1700,9 +1750,9 @@ fun MailDetailScreen(
                                 return@reaction_quick_picker
                             }
                             haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                            val identity = reaction_identity_for(latest_msg.id)
+                            val identity = reaction_identity_for(react_target.id)
                             mail_vm.send_reaction(
-                                message_id = latest_msg.id,
+                                message_id = react_target.id,
                                 emoji = emoji,
                                 sender_email = identity.email,
                                 sender_alias_hash = identity.alias_hash,
@@ -1722,7 +1772,7 @@ fun MailDetailScreen(
                         show_react = latest_restriction != org.astermail.android.mail.ReactionRestriction.disabled,
                         react_enabled = latest_restriction == null,
                         on_react = {
-                            val blocked = reaction_restriction_for(latest_msg)
+                            val blocked = reaction_restriction_for(react_target)
                             if (blocked != null) {
                                 show_toast(
                                     context.getString(
@@ -1817,7 +1867,7 @@ fun MailDetailScreen(
                                     show_snooze_sheet = true
                                 }
                                 "spam" -> bottom_action(
-                                    if (is_spam) TablerIcons.ShieldCheck else TablerIcons.Ban,
+                                    spam_action_icon(is_spam),
                                     if (is_spam) stringResource(R.string.swipe_not_spam) else stringResource(R.string.report_spam),
                                     test_tag = "toolbar_spam",
                                 ) {
@@ -1841,6 +1891,7 @@ fun MailDetailScreen(
                         }
                         bottom_action(TablerIcons.Dots, stringResource(R.string.more)) {
                             action_target_id = null
+                            action_menu_anchor = null
                             show_action_sheet = true
                         }
                     }
@@ -1911,12 +1962,14 @@ fun MailDetailScreen(
             },
             on_label = {
                 show_action_sheet = false
+                settings_vm.load_tags(force = settings_vm.state.value.tags.isEmpty())
                 show_label_sheet = true
             },
             on_customize_toolbar = {
                 show_action_sheet = false
                 on_navigate?.invoke("settings/customize_toolbar")
             },
+            anchor = action_menu_anchor,
         )
     }
 
@@ -2080,7 +2133,11 @@ fun MailDetailScreen(
         sender_profile_sheet(
             sender_email = profile_target.first,
             sender_name = profile_target.second,
-            on_close = { profile_sender = null },
+            trust = profile_sender_trust,
+            on_close = {
+                profile_sender = null
+                profile_sender_trust = null
+            },
             on_copy = { address ->
                 val copied = write_to_clipboard(
                     context,
@@ -2185,7 +2242,8 @@ fun MailDetailScreen(
         val settings_state by settings_vm.state.collectAsStateWithLifecycle()
         val unnamed_folder_label = stringResource(R.string.unnamed_folder)
         val folder_decrypt_failed_label = stringResource(R.string.folder_decrypt_failed)
-        val folder_items = org.astermail.android.folders.flatten_folder_tree(settings_state.labels)
+        val folder_nodes = org.astermail.android.folders.flatten_folder_tree(settings_state.labels)
+        val folder_items = folder_nodes
             .map { node ->
                 val label = node.label
                 val readable = label.encrypted_name?.takeIf { it.isNotBlank() && !looks_encrypted(it) }
@@ -2195,6 +2253,7 @@ fun MailDetailScreen(
             title = stringResource(R.string.move_to_folder),
             empty_message = stringResource(R.string.no_folders_yet_create),
             items = folder_items,
+            depths = folder_nodes.associate { it.label.label_token to it.depth },
             on_close = { show_folder_sheet = false },
             on_pick = { picked ->
                 val display = picked.encrypted_name?.takeIf { it.isNotBlank() }
@@ -2215,12 +2274,37 @@ fun MailDetailScreen(
         )
     }
 
+    val category_item = api_item
+    if (show_category_sheet && category_item != null) {
+        val plan_vm_categories: org.astermail.android.billing.PlanLimitsViewModel = hiltViewModel()
+        val plan_state_categories by plan_vm_categories.state.collectAsStateWithLifecycle()
+        val custom_categories = settings_state.preferences?.custom_categories.orEmpty()
+        val active_tabs = category_move_tabs(
+            settings_state.preferences?.enabled_categories,
+            custom_categories,
+            plan_state_categories.limits?.limits?.get("max_custom_categories")?.limit ?: -1,
+        )
+        move_to_category_sheet(
+            current_category = category_item.category,
+            active_tabs = active_tabs,
+            custom_categories = custom_categories,
+            on_pick = { picked -> mail_vm.move_to_category(category_item.id, picked) },
+            on_close = { show_category_sheet = false },
+        )
+    }
+
     if (show_label_sheet) {
         val settings_state by settings_vm.state.collectAsStateWithLifecycle()
-        val applied_tags = thread_state.item?.takeIf { it.id == email_id }?.tag_tokens?.toSet()
-            ?: emptySet()
-        val tag_items = org.astermail.android.labels.tag_rows(settings_state.tags, applied_tags)
-        val unknown_label = stringResource(R.string.unknown)
+        val label_item = api_item
+        val label_target_id = label_item?.id ?: email_id
+        val applied_tags = remember(label_item, inbox_state_for_folder.items) {
+            org.astermail.android.labels.conversation_tag_tokens(
+                label_item?.as_conversation_member(),
+                inbox_state_for_folder.items.map { it.as_conversation_member() },
+            ).toSet()
+        }
+        val tag_items = org.astermail.android.labels.tag_rows(settings_state.tags)
+        val unknown_label = stringResource(R.string.label_decrypt_failed)
         tag_picker_sheet(
             title = stringResource(R.string.edit_labels),
             empty_message = stringResource(R.string.no_labels_yet_create),
@@ -2229,9 +2313,9 @@ fun MailDetailScreen(
             on_pick = { picked ->
                 val display = org.astermail.android.labels.tag_display_name(picked, unknown_label)
                 if (picked.tag_token in applied_tags) {
-                    mail_vm.remove_tag(email_id, picked.tag_token, display)
+                    mail_vm.remove_tag_from_conversation(label_target_id, picked.tag_token, display)
                 } else {
-                    mail_vm.apply_tag(email_id, picked.tag_token, display)
+                    mail_vm.apply_tag_to_conversation(label_target_id, picked.tag_token, display)
                 }
             },
             applied_tokens = applied_tags,
@@ -2285,10 +2369,11 @@ internal fun expanded_message(
     on_image_click: (String) -> Unit = {},
     on_collapse: () -> Unit,
     on_sender_tap: (String, String) -> Unit = { _, _ -> },
+    on_sender_trust: (org.astermail.android.security.SenderTrust?) -> Unit = {},
     on_reply: () -> Unit,
     on_reply_all: () -> Unit,
     on_forward: () -> Unit,
-    on_more: () -> Unit,
+    on_more: (IntRect) -> Unit,
     on_attachment_tap: (MessageAttachment) -> Unit = {},
     on_attachment_download: (MessageAttachment) -> Unit = {},
     on_attachment_options: (MessageAttachment) -> Unit = {},
@@ -2302,6 +2387,7 @@ internal fun expanded_message(
     show_raw_headers: Boolean = false,
     show_header_reply: Boolean = true,
     identity_changed: Boolean = false,
+    sender_unauthenticated: Boolean = false,
     on_acknowledge_identity: () -> Unit = {},
 ) {
     val colors = AsterMaterial.colors
@@ -2315,11 +2401,17 @@ internal fun expanded_message(
         )
         show_copy_result_toast(context, email, copied)
     }
+    val is_own_message = my_email.isNotEmpty() &&
+        msg.sender_email.trim().lowercase() == my_email &&
+        !msg.is_external
+    val trust = remember_sender_trust(if (is_own_message) null else msg.trust_message)
+    val marks_hidden = trust?.show_identity_marks == false
+    val shows_verified_check = trust?.show_verified_badge == true && msg.sender_verified_domain != null
     var show_details by remember { mutableStateOf(false) }
     var addresses_expanded by remember(msg.id) { mutableStateOf(false) }
     var sender_name_truncated by remember(msg.id) { mutableStateOf(false) }
     var show_sender_verified by remember(msg.id) { mutableStateOf(false) }
-    if (show_sender_verified) {
+    if (show_sender_verified && shows_verified_check) {
         org.astermail.android.design.components.AsterDialog(
             on_dismiss = { show_sender_verified = false },
             title = stringResource(R.string.sender_verified_title),
@@ -2332,17 +2424,15 @@ internal fun expanded_message(
             },
         )
     }
-    val tracker_report by androidx.compose.runtime.produceState(
-        initialValue = EmailHtmlSanitizer.TrackerReport(),
+    val content_analysis by androidx.compose.runtime.produceState(
+        initialValue = MessageContentAnalysis(),
         msg.body_html,
     ) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-            EmailHtmlSanitizer.analyze_trackers(msg.body_html)
+            analyze_message_content(msg.body_html)
         }
     }
-    val tracker_count = remember(tracker_report, msg.trackers_blocked) {
-        maxOf(msg.trackers_blocked, tracker_report.total)
-    }
+    val tracker_report = content_analysis.tracker_report
     var show_tracker_details by remember(msg.id) { mutableStateOf(false) }
     if (show_tracker_details) {
         tracker_details_dialog(report = tracker_report, on_close = { show_tracker_details = false })
@@ -2355,12 +2445,25 @@ internal fun expanded_message(
         summarize_email_authentication(msg)
     }
 
+    val unsub_info = remember(msg.body_html, msg.body, msg.raw_headers, msg.dkim_result) {
+        detect_unsubscribe_info(
+            html_content = msg.body_html,
+            text_content = msg.body,
+            list_unsubscribe = msg.raw_headers.firstOrNull {
+                it.first.equals("list-unsubscribe", ignoreCase = true)
+            }?.second,
+            list_unsubscribe_post = msg.raw_headers.firstOrNull {
+                it.first.equals("list-unsubscribe-post", ignoreCase = true)
+            }?.second,
+            dkim_result = msg.dkim_result,
+        )
+    }
+    val show_unsub_link = unsubscribe_link_visible(show_unsub, unsub_info)
+
     val card_color = inbox_card_read_color(colors)
     val card_shape = remember(is_first_card, is_last_card) {
         inbox_group_shape(is_first_card, is_last_card)
     }
-    var body_backing by remember(msg.id) { mutableStateOf(Color.Transparent) }
-    var body_backing_top by remember(msg.id) { mutableStateOf(-1f) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2372,7 +2475,7 @@ internal fun expanded_message(
             .clip(card_shape)
             .acrylic_backdrop(colors)
             .background(card_color)
-            .email_glass_backing_below(body_backing_top, body_backing),
+            .background(email_glass_backing(colors, white_page = false)),
     ) {
         Row(
             modifier = Modifier
@@ -2387,16 +2490,26 @@ internal fun expanded_message(
                 .testTag("message_header_$message_index"),
             verticalAlignment = Alignment.Top,
         ) {
-            val shown_sender_name = displayed_sender_name(msg.display_sender_name, msg.sender_name)
+            val shown_sender_name = org.astermail.android.security.trusted_sender_name(
+                trust,
+                displayed_sender_name(msg.display_sender_name, msg.sender_name),
+                stringResource(R.string.unknown),
+            )
             val shown_sender_email = displayed_sender_email(msg.display_sender_email, msg.sender_email)
             SenderAvatar(
                 email = shown_sender_email,
                 name = shown_sender_name,
-                sender_authenticated = system_avatar_authenticated(msg),
-                profile_picture_url = if (msg.sender_email.lowercase() == my_email) my_profile_pic else null,
+                sender_authenticated = !marks_hidden &&
+                    trust?.warning == null &&
+                    system_avatar_authenticated(msg),
+                profile_picture_url = if (is_own_message) my_profile_pic else null,
+                plain = marks_hidden,
                 modifier = Modifier
                     .clip(CircleShape)
-                    .clickable { on_sender_tap(shown_sender_email, shown_sender_name) },
+                    .clickable {
+                        on_sender_trust(trust)
+                        on_sender_tap(shown_sender_email, shown_sender_name)
+                    },
             )
             Spacer(Modifier.width(AsterSpacing.md))
             Column(modifier = Modifier.weight(1f)) {
@@ -2430,7 +2543,7 @@ internal fun expanded_message(
                                         onLongClick = { copy_email(shown_sender_email) },
                                     ),
                             )
-                            if (msg.sender_verified_domain != null) {
+                            if (shows_verified_check) {
                                 Spacer(Modifier.width(4.dp))
                                 Icon(
                                     imageVector = TablerIcons.CircleCheck,
@@ -2443,7 +2556,11 @@ internal fun expanded_message(
                                 )
                             }
                         }
-                        email_auth_badge(msg = msg)
+                        email_auth_badge(
+                            msg = msg,
+                            unverified = trust?.auth_state == org.astermail.android.security.SenderAuthState.unverified,
+                            unverified_domain = trust?.domain,
+                        )
                     }
                     Spacer(Modifier.width(AsterSpacing.sm))
                     val header_yesterday_label = stringResource(R.string.yesterday)
@@ -2462,6 +2579,23 @@ internal fun expanded_message(
                 Row(verticalAlignment = Alignment.Top) {
                     Column(modifier = Modifier.weight(1f)) {
                         Spacer(Modifier.height(1.dp))
+                        if (trust != null && trust.name.isNotEmpty() && trust.address.isNotEmpty()) {
+                            Text(
+                                text = isolated_slot_value(trust.address),
+                                color = colors.text_muted,
+                                fontSize = 12.sp,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .testTag("message_sender_address_$message_index")
+                                    .combinedClickable(
+                                        hapticFeedbackEnabled = false,
+                                        onClick = { show_details = !show_details },
+                                        onLongClick = { copy_email(trust.address) },
+                                    ),
+                            )
+                            Spacer(Modifier.height(1.dp))
+                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.combinedClickable(
@@ -2503,6 +2637,20 @@ internal fun expanded_message(
                             Spacer(Modifier.height(4.dp))
                             alias_chip(header_alias_label, modifier = Modifier.widthIn(max = 200.dp))
                         }
+                        AnimatedVisibility(
+                            visible = show_unsub_link,
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut(),
+                        ) {
+                            LaunchedEffect(msg.id) {
+                                on_track(
+                                    msg.sender_email,
+                                    if (trust != null && trust.name.isEmpty()) "" else msg.sender_name,
+                                    unsub_info.unsubscribe_link,
+                                )
+                            }
+                            unsubscribe_link(on_unsubscribe = { on_unsubscribe(unsub_info) })
+                        }
                     }
                     Spacer(Modifier.width(AsterSpacing.sm))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2522,11 +2670,22 @@ internal fun expanded_message(
                                 )
                             }
                         }
+                        val more_coordinates = remember { arrayOfNulls<LayoutCoordinates>(1) }
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
+                                .onGloballyPositioned { more_coordinates[0] = it }
                                 .clip(CircleShape)
-                                .clickable(role = Role.Button, onClick = on_more)
+                                .clickable(role = Role.Button) {
+                                    val coordinates = more_coordinates[0]
+                                    on_more(
+                                        if (coordinates != null && coordinates.isAttached) {
+                                            coordinates.boundsInWindow().roundToIntRect()
+                                        } else {
+                                            IntRect.Zero
+                                        },
+                                    )
+                                }
                                 .testTag("message_more_$message_index"),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -2550,9 +2709,16 @@ internal fun expanded_message(
             val received_on = remember(msg) {
                 resolve_received_on_address(msg.raw_headers, msg.to_addresses + msg.cc_addresses, msg.sender_email)
             }
-            val details_sender_name = displayed_sender_name(msg.display_sender_name, msg.sender_name)
+            val details_sender_name = org.astermail.android.security.trusted_sender_name(
+                trust,
+                displayed_sender_name(msg.display_sender_name, msg.sender_name),
+                stringResource(R.string.unknown),
+            )
             val details_sender_email = displayed_sender_email(msg.display_sender_email, msg.sender_email)
-            val details_sender = if (details_sender_name.equals(details_sender_email, ignoreCase = true)) {
+            val details_name_hidden = trust != null && trust.name.isEmpty()
+            val details_sender = if (
+                details_name_hidden || details_sender_name.equals(details_sender_email, ignoreCase = true)
+            ) {
                 details_sender_email
             } else {
                 "$details_sender_name <$details_sender_email>"
@@ -2570,7 +2736,8 @@ internal fun expanded_message(
                 is_encrypted = msg.is_e2e_encrypted,
                 pgp_encrypted = msg.pgp_encrypted,
                 pgp_signature = msg.pgp_signature,
-                tracker_count = tracker_count,
+                tracking_pixel_count = tracker_report.pixel_count,
+                tracking_link_count = tracker_report.cleaned_link_count,
                 date_text = msg.timestamp.format_full_datetime(),
                 received_on = received_on,
                 authentication = auth_summary?.let { summary ->
@@ -2593,43 +2760,13 @@ internal fun expanded_message(
             )
         }
 
-        val unsub_info = remember(msg.body_html, msg.body, msg.raw_headers, msg.dkim_result) {
-            detect_unsubscribe_info(
-                html_content = msg.body_html,
-                text_content = msg.body,
-                list_unsubscribe = msg.raw_headers.firstOrNull {
-                    it.first.equals("list-unsubscribe", ignoreCase = true)
-                }?.second,
-                list_unsubscribe_post = msg.raw_headers.firstOrNull {
-                    it.first.equals("list-unsubscribe-post", ignoreCase = true)
-                }?.second,
-                dkim_result = msg.dkim_result,
-            )
-        }
-
-        val external_counts = remember(msg.body_html) {
-            if (msg.body_html != null) count_external_content(msg.body_html) else ExternalContentCounts(0, 0, 0, 0)
-        }
+        val external_counts = content_analysis.external_counts
 
         if (msg.send_status == "failed" || msg.send_status == "bounced") {
             send_failure_banner(reason = msg.send_error)
         }
 
-        val show_unsub_banner = show_unsub && unsub_info.has_unsubscribe
         val show_external_banner = external_counts.total > 0 && !allow_external
-
-        AnimatedVisibility(
-            visible = show_unsub_banner,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
-        ) {
-            LaunchedEffect(msg.id) {
-                on_track(msg.sender_email, msg.sender_name, unsub_info.unsubscribe_link)
-            }
-            unsubscribe_banner(
-                on_unsubscribe = { on_unsubscribe(unsub_info) },
-            )
-        }
 
         AnimatedVisibility(
             visible = show_external_banner,
@@ -2647,9 +2784,12 @@ internal fun expanded_message(
                     counts = external_counts,
                     on_allow_once = on_load_external,
                     on_always_allow = if (offer_always_allow) on_always_allow_external else null,
+                    on_show_trackers = if (tracker_report.total > 0) ({ show_tracker_details = true }) else null,
                 )
             }
         }
+
+        sender_trust_banner(trust)
 
         val phishing_result by produceState<org.astermail.android.security.PhishingResult?>(
             initialValue = null,
@@ -2678,7 +2818,7 @@ internal fun expanded_message(
                 phishing_banner(result = phishing_snapshot)
             }
         }
-        if (auth_status == SenderAuthStatus.failed &&
+        if ((auth_status == SenderAuthStatus.failed || sender_unauthenticated) &&
             (phishing_snapshot == null || phishing_snapshot.level == org.astermail.android.security.PhishingLevel.safe)
         ) {
             sender_unverified_banner(
@@ -2719,6 +2859,9 @@ internal fun expanded_message(
             var body_wait_expired by remember(msg.id, retry_in_progress) { mutableStateOf(false) }
             LaunchedEffect(msg.id, retry_in_progress) {
                 kotlinx.coroutines.delay(BODY_PENDING_TIMEOUT_MS)
+                if (org.astermail.android.api.network.low_network_state.extend_timeouts()) {
+                    kotlinx.coroutines.delay(SLOW_LINK_BODY_PENDING_TIMEOUT_MS - BODY_PENDING_TIMEOUT_MS)
+                }
                 body_wait_expired = true
             }
             if (body_wait_expired) {
@@ -2759,10 +2902,8 @@ internal fun expanded_message(
                 on_ready = on_body_ready,
                 on_link_click = on_link_click,
                 on_image_click = on_image_click,
-                on_glass_backing = { body_backing = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .onGloballyPositioned { body_backing_top = it.positionInParent().y }
                     .padding(top = AsterSpacing.xs, bottom = if (is_last) 0.dp else AsterSpacing.sm)
                     .testTag("message_body"),
             )
@@ -2870,10 +3011,8 @@ internal fun expanded_message(
                 on_ready = on_body_ready,
                 on_link_click = on_link_click,
                 on_image_click = on_image_click,
-                on_glass_backing = { body_backing = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .onGloballyPositioned { body_backing_top = it.positionInParent().y }
                     .padding(top = AsterSpacing.xs, bottom = if (is_last) 0.dp else AsterSpacing.sm)
                     .testTag("message_body"),
             )
@@ -2961,7 +3100,7 @@ private fun reply_action_row(
                     .size(48.dp)
                     .clip(SquircleShape(999.dp))
                     .background(if (react_enabled) field_surface_color(colors) else disabled_surface_color(colors))
-                    .clickable(enabled = react_enabled, onClick = on_react)
+                    .clickable(onClick = on_react)
                     .testTag("detail_react"),
                 contentAlignment = Alignment.Center,
             ) {
@@ -3386,39 +3525,62 @@ internal fun compact_banner_action(
     val colors = AsterMaterial.colors
     Text(
         text = label,
-        color = colors.accent_blue,
+        color = if (primary) colors.on_accent else colors.accent_blue,
         fontSize = 13.sp,
-        fontWeight = if (primary) FontWeight.SemiBold else FontWeight.Medium,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+        fontWeight = FontWeight.SemiBold,
+        textAlign = TextAlign.Center,
         modifier = Modifier
-            .clip(SquircleShape(6.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+            .minimumInteractiveComponentSize()
+            .clip(AsterShapes.control)
+            .background(if (primary) colors.accent_blue else tonal_surface_color(colors, colors.accent_blue))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
     )
 }
 
 @Composable
-internal fun compact_banner(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    on_icon_click: (() -> Unit)? = null,
-    actions: @Composable () -> Unit,
+internal fun compact_banner_menu_action(
+    content_description: String,
+    items: @Composable androidx.compose.foundation.layout.ColumnScope.(close: () -> Unit) -> Unit,
 ) {
     val colors = AsterMaterial.colors
     var expanded by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AsterSpacing.md, vertical = 3.dp)
-            .acrylic(colors, SquircleShape(10.dp), colors.bg_secondary)
-            .padding(start = AsterSpacing.md, end = AsterSpacing.sm, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Box {
+        Box(
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .clip(AsterShapes.control)
+                .background(tonal_surface_color(colors, colors.accent_blue))
+                .clickable(role = Role.Button, onClick = { expanded = true })
+                .semantics { contentDescription = content_description }
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .testTag("compact_banner_more"),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = TablerIcons.ChevronDown,
+                contentDescription = null,
+                tint = colors.accent_blue,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        aster_menu(expanded = expanded, on_dismiss = { expanded = false }) {
+            items { expanded = false }
+        }
+    }
+}
+
+@Composable
+private fun compact_banner_icon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    on_icon_click: (() -> Unit)? = null,
+) {
+    Box(modifier = Modifier.size(19.dp), contentAlignment = Alignment.Center) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (on_icon_click != null) colors.accent_blue else colors.text_secondary,
+            tint = tint,
             modifier = Modifier
                 .then(
                     if (on_icon_click != null) {
@@ -3432,37 +3594,284 @@ internal fun compact_banner(
                 )
                 .size(15.dp),
         )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = label,
-            color = colors.text_secondary,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = if (expanded) 6 else 1,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .clickable { expanded = !expanded },
-        )
-        Spacer(Modifier.width(6.dp))
-        actions()
+    }
+}
+
+private val compact_summary_policy = object : androidx.compose.ui.layout.MeasurePolicy {
+    override fun androidx.compose.ui.layout.MeasureScope.measure(
+        measurables: List<androidx.compose.ui.layout.Measurable>,
+        constraints: androidx.compose.ui.unit.Constraints,
+    ): androidx.compose.ui.layout.MeasureResult {
+        val (first_icon, first_text, separator, second_icon, second_text) = measurables
+        val icon_gap = 8.dp.roundToPx()
+        val loose = androidx.compose.ui.unit.Constraints()
+        val first_icon_placeable = first_icon.measure(loose)
+        val second_icon_placeable = second_icon.measure(loose)
+        val text_start = first_icon_placeable.width + icon_gap
+        val one_line_width = text_start +
+            first_text.maxIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity) +
+            separator.maxIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity) +
+            second_text.maxIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity)
+        if (one_line_width <= constraints.maxWidth) {
+            val first = first_text.measure(loose)
+            val sep = separator.measure(loose)
+            val second = second_text.measure(loose)
+            val height = maxOf(first_icon_placeable.height, first.height, sep.height, second.height)
+            return layout(constraints.constrainWidth(one_line_width), height) {
+                first_icon_placeable.placeRelative(0, (height - first_icon_placeable.height) / 2)
+                first.placeRelative(text_start, (height - first.height) / 2)
+                sep.placeRelative(text_start + first.width, (height - sep.height) / 2)
+                second.placeRelative(text_start + first.width + sep.width, (height - second.height) / 2)
+            }
+        }
+        val text_max = maxOf(0, constraints.maxWidth - text_start)
+        val first = first_text.measure(androidx.compose.ui.unit.Constraints(maxWidth = text_max))
+        val second = second_text.measure(androidx.compose.ui.unit.Constraints(maxWidth = text_max))
+        val first_row = maxOf(first_icon_placeable.height, first.height)
+        val second_row = maxOf(second_icon_placeable.height, second.height)
+        val width = constraints.constrainWidth(text_start + maxOf(first.width, second.width))
+        return layout(width, first_row + second_row) {
+            first_icon_placeable.placeRelative(0, (first_row - first_icon_placeable.height) / 2)
+            first.placeRelative(text_start, (first_row - first.height) / 2)
+            second_icon_placeable.placeRelative(0, first_row + (second_row - second_icon_placeable.height) / 2)
+            second.placeRelative(text_start, first_row + (second_row - second.height) / 2)
+        }
+    }
+
+    override fun androidx.compose.ui.layout.IntrinsicMeasureScope.maxIntrinsicWidth(
+        measurables: List<androidx.compose.ui.layout.IntrinsicMeasurable>,
+        height: Int,
+    ): Int {
+        val (first_icon, first_text, separator, _, second_text) = measurables
+        return first_icon.maxIntrinsicWidth(height) + 8.dp.roundToPx() +
+            first_text.maxIntrinsicWidth(height) + separator.maxIntrinsicWidth(height) + second_text.maxIntrinsicWidth(height)
+    }
+
+    override fun androidx.compose.ui.layout.IntrinsicMeasureScope.minIntrinsicWidth(
+        measurables: List<androidx.compose.ui.layout.IntrinsicMeasurable>,
+        height: Int,
+    ): Int {
+        val (first_icon, first_text, _, _, second_text) = measurables
+        return first_icon.maxIntrinsicWidth(height) + 8.dp.roundToPx() +
+            maxOf(first_text.maxIntrinsicWidth(height), second_text.maxIntrinsicWidth(height))
     }
 }
 
 @Composable
-internal fun unsubscribe_banner(
-    on_unsubscribe: () -> Unit,
+internal fun compact_banner_summary(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon_tint: Color,
+    on_icon_click: (() -> Unit)?,
+    label: String,
+    second_icon: androidx.compose.ui.graphics.vector.ImageVector,
+    second_icon_tint: Color,
+    second_label: String,
+    second_label_color: Color,
+    second_label_modifier: Modifier,
 ) {
-    compact_banner(
-        icon = TablerIcons.Mail,
-        label = stringResource(R.string.detail_unsubscribe_title),
-    ) {
-        compact_banner_action(
-            label = stringResource(R.string.unsubscribe),
-            primary = true,
-            onClick = on_unsubscribe,
-        )
+    val colors = AsterMaterial.colors
+    Layout(
+        content = {
+            compact_banner_icon(icon = icon, tint = icon_tint, on_icon_click = on_icon_click)
+            Text(
+                text = label,
+                color = colors.text_secondary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.testTag("compact_banner_label"),
+            )
+            Text(
+                text = " · ",
+                color = colors.text_secondary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+            compact_banner_icon(icon = second_icon, tint = second_icon_tint)
+            Text(
+                text = second_label,
+                color = second_label_color,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = second_label_modifier,
+            )
+        },
+        measurePolicy = compact_summary_policy,
+    )
+}
+
+internal fun compact_banner_summary_inline(
+    available_width: Int,
+    gap: Int,
+    actions_width: Int,
+    one_line_width: Int,
+    two_row_width: Int,
+): Boolean = minOf(one_line_width, two_row_width) + gap + actions_width <= available_width
+
+@Composable
+internal fun compact_banner_row(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    on_icon_click: (() -> Unit)? = null,
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit,
+) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        compact_banner_icon(icon = icon, tint = tint, on_icon_click = on_icon_click)
+        Spacer(Modifier.width(8.dp))
+        content()
     }
+}
+
+internal fun compact_banner_actions_inline(
+    available_width: Int,
+    gap: Int,
+    actions_width: Int,
+    text_single_line_width: Int,
+    min_text_width: Int,
+    max_text_lines: Int,
+    text_may_wrap: Boolean,
+    text_lines_at: (Int) -> Int,
+): Boolean {
+    if (text_single_line_width + gap + actions_width <= available_width) return true
+    if (!text_may_wrap) return false
+    val text_width = available_width - gap - actions_width
+    if (text_width < min_text_width) return false
+    return text_lines_at(text_width) <= max_text_lines
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun compact_banner(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    on_icon_click: (() -> Unit)? = null,
+    secondary_row: (@Composable () -> Unit)? = null,
+    summary: (@Composable () -> Unit)? = null,
+    actions: @Composable () -> Unit,
+) {
+    val colors = AsterMaterial.colors
+    val label_style = LocalTextStyle.current.merge(
+        TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium),
+    )
+    val text_measurer = rememberTextMeasurer()
+    Layout(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AsterSpacing.md, vertical = 3.dp)
+            .acrylic(colors, SquircleShape(10.dp), colors.bg_secondary)
+            .padding(start = AsterSpacing.md, end = AsterSpacing.sm),
+        content = {
+            Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                if (summary != null) {
+                    summary()
+                } else if (label.isNotEmpty() || secondary_row == null) {
+                    compact_banner_row(
+                        icon = icon,
+                        tint = if (on_icon_click != null) colors.accent_blue else colors.text_secondary,
+                        on_icon_click = on_icon_click,
+                    ) {
+                        Text(
+                            text = label,
+                            color = colors.text_secondary,
+                            style = label_style,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("compact_banner_label"),
+                        )
+                    }
+                }
+                if (summary == null) secondary_row?.invoke()
+            }
+            FlowRow(
+                modifier = Modifier.testTag("compact_banner_actions"),
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+            ) {
+                actions()
+            }
+        },
+    ) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val gap = 6.dp.roundToPx()
+        val text_measurable = measurables[0]
+        val actions_measurable = measurables[1]
+        val actions_width = actions_measurable.maxIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity)
+        val text_width = text_measurable.maxIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity)
+        val icon_column = 27.dp.roundToPx()
+        val inline = if (summary != null) compact_banner_summary_inline(
+            available_width = width,
+            gap = gap,
+            actions_width = actions_width,
+            one_line_width = text_width,
+            two_row_width = text_measurable.minIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity),
+        ) else compact_banner_actions_inline(
+            available_width = width,
+            gap = gap,
+            actions_width = actions_width,
+            text_single_line_width = text_width,
+            min_text_width = icon_column + 120.dp.roundToPx(),
+            max_text_lines = 3,
+            text_may_wrap = secondary_row == null && label.isNotEmpty(),
+        ) { slot ->
+            text_measurer.measure(
+                text = label,
+                style = label_style,
+                constraints = androidx.compose.ui.unit.Constraints(maxWidth = maxOf(0, slot - icon_column)),
+            ).lineCount
+        }
+        if (inline) {
+            val actions_placeable = actions_measurable.measure(
+                androidx.compose.ui.unit.Constraints(maxWidth = actions_width),
+            )
+            val text_slot = width - gap - actions_placeable.width
+            val text_placeable = text_measurable.measure(
+                androidx.compose.ui.unit.Constraints(minWidth = text_slot, maxWidth = text_slot),
+            )
+            val height = maxOf(text_placeable.height, actions_placeable.height)
+            layout(width, height) {
+                text_placeable.placeRelative(0, (height - text_placeable.height) / 2)
+                actions_placeable.placeRelative(width - actions_placeable.width, (height - actions_placeable.height) / 2)
+            }
+        } else {
+            val text_placeable = text_measurable.measure(
+                androidx.compose.ui.unit.Constraints(minWidth = width, maxWidth = width),
+            )
+            val actions_placeable = actions_measurable.measure(
+                androidx.compose.ui.unit.Constraints(maxWidth = width),
+            )
+            layout(width, text_placeable.height + actions_placeable.height) {
+                text_placeable.placeRelative(0, 0)
+                actions_placeable.placeRelative(width - actions_placeable.width, text_placeable.height)
+            }
+        }
+    }
+}
+
+internal fun unsubscribe_link_visible(show_unsub: Boolean, info: UnsubscribeInfo): Boolean =
+    show_unsub && info.has_unsubscribe
+
+@Composable
+internal fun unsubscribe_link(
+    on_unsubscribe: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = AsterMaterial.colors
+    val label = stringResource(R.string.unsubscribe)
+    Text(
+        text = label,
+        color = colors.accent_blue,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        fontWeight = FontWeight.Medium,
+        modifier = modifier
+            .clip(SquircleShape(4.dp))
+            .clickable(role = Role.Button, onClickLabel = label, onClick = on_unsubscribe)
+            .semantics { contentDescription = label }
+            .testTag("unsubscribe_link"),
+    )
 }
 
 @Composable
@@ -3480,7 +3889,7 @@ private fun blocked_content_details_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
                 Text(
                     text = stringResource(R.string.blocked_content_details_hint),
@@ -3547,7 +3956,7 @@ private fun tracker_details_section_label(text: String) {
 }
 
 @Composable
-private fun tracker_details_dialog(
+internal fun tracker_details_dialog(
     report: EmailHtmlSanitizer.TrackerReport,
     on_close: () -> Unit,
 ) {
@@ -3561,7 +3970,7 @@ private fun tracker_details_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
                 Text(
                     text = stringResource(R.string.tracker_details_hint),
@@ -3628,15 +4037,13 @@ internal fun external_content_banner(
     counts: ExternalContentCounts,
     on_allow_once: () -> Unit,
     on_always_allow: (() -> Unit)?,
+    on_show_trackers: (() -> Unit)? = null,
 ) {
+    val colors = AsterMaterial.colors
     val summary_parts = mutableListOf<String>()
     if (counts.image_count > 0) {
         val n = counts.image_count
         summary_parts.add(pluralStringResource(R.plurals.n_images, n, n))
-    }
-    if (counts.tracker_count > 0) {
-        val n = counts.tracker_count
-        summary_parts.add(pluralStringResource(R.plurals.n_trackers, n, n))
     }
     if (counts.font_count > 0) {
         val n = counts.font_count
@@ -3646,29 +4053,82 @@ internal fun external_content_banner(
         val n = counts.css_count
         summary_parts.add(pluralStringResource(R.plurals.n_stylesheets, n, n))
     }
-    val label = if (summary_parts.isNotEmpty()) summary_parts.joinToString(", ")
-        else stringResource(R.string.detail_external_images_blocked)
+    val label = when {
+        summary_parts.isNotEmpty() -> summary_parts.joinToString(", ")
+        counts.tracker_count > 0 -> ""
+        else -> stringResource(R.string.detail_external_images_blocked)
+    }
     var show_details by remember { mutableStateOf(false) }
     if (show_details) {
         blocked_content_details_dialog(counts = counts, on_close = { show_details = false })
     }
+    val open_details: (() -> Unit)? = if (counts.items.isNotEmpty()) ({ show_details = true }) else null
+    val open_trackers = on_show_trackers ?: open_details
+    val tracker_label = pluralStringResource(R.plurals.n_tracking_pixels, counts.tracker_count, counts.tracker_count)
+    val tracker_link_modifier = Modifier
+        .clip(SquircleShape(6.dp))
+        .then(
+            if (open_trackers != null) {
+                Modifier.clickable(role = Role.Button, onClick = open_trackers)
+            } else {
+                Modifier
+            },
+        )
+        .testTag("banner_trackers")
+        .padding(vertical = 2.dp)
+    val tracker_color = if (open_trackers != null) colors.accent_blue else colors.text_secondary
     compact_banner(
         icon = TablerIcons.PhotoOff,
         label = label,
-        on_icon_click = if (counts.items.isNotEmpty()) ({ show_details = true }) else null,
+        on_icon_click = open_details,
+        summary = if (counts.tracker_count > 0 && label.isNotEmpty()) ({
+            compact_banner_summary(
+                icon = TablerIcons.PhotoOff,
+                icon_tint = if (open_details != null) colors.accent_blue else colors.text_secondary,
+                on_icon_click = open_details,
+                label = label,
+                second_icon = TablerIcons.ShieldCheck,
+                second_icon_tint = colors.success,
+                second_label = tracker_label,
+                second_label_color = tracker_color,
+                second_label_modifier = tracker_link_modifier,
+            )
+        }) else null,
+        secondary_row = if (counts.tracker_count > 0) ({
+            compact_banner_row(
+                icon = TablerIcons.ShieldCheck,
+                tint = colors.success,
+                modifier = tracker_link_modifier,
+            ) {
+                Text(
+                    text = tracker_label,
+                    color = tracker_color,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }) else null,
     ) {
         compact_banner_action(
-            label = stringResource(R.string.detail_external_allow_once),
-            primary = false,
+            label = stringResource(R.string.detail_external_load),
+            primary = true,
             onClick = on_allow_once,
         )
         if (on_always_allow != null) {
-            Text("·", color = AsterMaterial.colors.text_muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
-            compact_banner_action(
-                label = stringResource(R.string.detail_external_always_allow),
-                primary = true,
-                onClick = on_always_allow,
-            )
+            compact_banner_menu_action(
+                content_description = stringResource(R.string.more_options),
+            ) { close ->
+                aster_menu_item(
+                    label = stringResource(R.string.detail_external_always_allow),
+                    on_click = {
+                        close()
+                        on_always_allow()
+                    },
+                    test_tag = "compact_banner_always_allow",
+                )
+            }
         }
     }
 }
@@ -3696,7 +4156,6 @@ internal fun traffic_saver_banner(
             primary = false,
             onClick = on_load_once,
         )
-        Text("·", color = AsterMaterial.colors.text_muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 4.dp))
         compact_banner_action(
             label = stringResource(R.string.detail_disable_traffic_saving),
             primary = true,
@@ -3737,7 +4196,7 @@ private fun raw_source_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
                 Text(
                     text = stringResource(R.string.detail_raw_source_headers),
@@ -3835,12 +4294,17 @@ private fun message_details_dialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 440.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             ) {
+                val from_email = displayed_sender_email(message.display_sender_email, message.sender_email)
+                val from_name = org.astermail.android.security.trusted_sender_name(
+                    message.trust_message,
+                    displayed_sender_name(message.display_sender_name, message.sender_name),
+                    stringResource(R.string.unknown),
+                )
                 message_detail_row(
                     stringResource(R.string.from_label),
-                    "${displayed_sender_name(message.display_sender_name, message.sender_name)} " +
-                        "<${displayed_sender_email(message.display_sender_email, message.sender_email)}>",
+                    if (from_name.equals(from_email, ignoreCase = true)) from_email else "$from_name <$from_email>",
                 )
                 if (message.to_label.isNotBlank()) {
                     message_detail_row(stringResource(R.string.to_label), message.to_label)
@@ -3929,7 +4393,8 @@ internal fun message_details_panel(
     reply_to: String?,
     date_text: String,
     is_encrypted: Boolean,
-    tracker_count: Int,
+    tracking_pixel_count: Int,
+    tracking_link_count: Int,
     received_on: String?,
     authentication: String?,
     authentication_failed: Boolean,
@@ -4004,6 +4469,7 @@ internal fun message_details_panel(
                     value = joined,
                     on_long_click = { copy_address(joined) },
                     modifier = Modifier.testTag("details_$field"),
+                    value_max_height = 180.dp,
                 )
             }
         }
@@ -4024,7 +4490,7 @@ internal fun message_details_panel(
             )
         }
         Text(
-            text = stringResource(R.string.view_encryption_details),
+            text = stringResource(R.string.view_security_details),
             color = colors.accent_blue,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
@@ -4051,7 +4517,7 @@ internal fun message_details_panel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 260.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .vertical_scroll_with_indicator(),
             )
         }
     }
@@ -4060,7 +4526,8 @@ internal fun message_details_panel(
             is_encrypted = is_encrypted,
             pgp_encrypted = pgp_encrypted,
             pgp_signature = pgp_signature,
-            tracker_count = tracker_count,
+            tracking_pixel_count = tracking_pixel_count,
+            tracking_link_count = tracking_link_count,
             received_on = received_on,
             authentication = authentication,
             authentication_failed = authentication_failed,
@@ -4075,7 +4542,8 @@ private fun security_details_dialog(
     is_encrypted: Boolean,
     pgp_encrypted: Boolean,
     pgp_signature: org.astermail.android.crypto.PgpSignatureStatus,
-    tracker_count: Int,
+    tracking_pixel_count: Int,
+    tracking_link_count: Int,
     received_on: String?,
     authentication: String?,
     authentication_failed: Boolean,
@@ -4083,6 +4551,19 @@ private fun security_details_dialog(
     on_close: () -> Unit,
 ) {
     val colors = AsterMaterial.colors
+    val tracker_count = tracking_pixel_count + tracking_link_count
+    val tracker_breakdown = listOfNotNull(
+        if (tracking_pixel_count > 0) {
+            pluralStringResource(R.plurals.n_tracking_pixels, tracking_pixel_count, tracking_pixel_count)
+        } else {
+            null
+        },
+        if (tracking_link_count > 0) {
+            pluralStringResource(R.plurals.n_tracking_links, tracking_link_count, tracking_link_count)
+        } else {
+            null
+        },
+    ).joinToString(" · ")
     val dialog_context = LocalContext.current
     val dialog_haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val dialog_haptics_enabled = org.astermail.android.ui.theme.local_accessibility.current.haptic_enabled
@@ -4128,7 +4609,8 @@ private fun security_details_dialog(
                 detail_meta_row(
                     label = stringResource(R.string.tracker_protection),
                     value = if (tracker_count > 0) {
-                        pluralStringResource(R.plurals.trackers_blocked_count, tracker_count, tracker_count)
+                        pluralStringResource(R.plurals.trackers_blocked_count, tracker_count, tracker_count) +
+                            "\n" + tracker_breakdown
                     } else {
                         stringResource(R.string.no_trackers)
                     },
@@ -4187,6 +4669,7 @@ private fun detail_meta_row(
     value_tint: androidx.compose.ui.graphics.Color? = null,
     on_click: (() -> Unit)? = null,
     on_long_click: (() -> Unit)? = null,
+    value_max_height: androidx.compose.ui.unit.Dp? = null,
 ) {
     val colors = AsterMaterial.colors
     Row(
@@ -4229,7 +4712,17 @@ private fun detail_meta_row(
                 text = value,
                 color = value_tint ?: colors.text_secondary,
                 fontSize = 13.sp,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (value_max_height != null) {
+                            Modifier
+                                .heightIn(max = value_max_height)
+                                .vertical_scroll_with_indicator()
+                        } else {
+                            Modifier
+                        },
+                    ),
             )
         }
         if (on_click != null) {
@@ -4257,6 +4750,16 @@ private fun collapsed_message(
     val colors = AsterMaterial.colors
 
     val is_undecryptable = msg.is_undecryptable || (msg.sender_email.isBlank() && msg.body.isBlank())
+    val is_own_message = my_email.isNotEmpty() &&
+        msg.sender_email.trim().lowercase() == my_email &&
+        !msg.is_external
+    val trust = remember_sender_trust(if (is_own_message || is_undecryptable) null else msg.trust_message)
+    val marks_hidden = trust?.show_identity_marks == false
+    val shown_sender_name = org.astermail.android.security.trusted_sender_name(
+        trust,
+        displayed_sender_name(msg.display_sender_name, msg.sender_name),
+        stringResource(R.string.unknown),
+    )
     val card_color = inbox_card_read_color(colors)
 
     val card_shape = remember(is_first_card, is_last_card) {
@@ -4272,7 +4775,8 @@ private fun collapsed_message(
             )
             .clip(card_shape)
             .acrylic_backdrop(colors)
-            .background(card_color),
+            .background(card_color)
+            .background(email_glass_backing(colors, white_page = false)),
     ) {
         Row(
             modifier = Modifier
@@ -4303,18 +4807,20 @@ private fun collapsed_message(
             } else {
                 SenderAvatar(
                     email = displayed_sender_email(msg.display_sender_email, msg.sender_email),
-                    name = displayed_sender_name(msg.display_sender_name, msg.sender_name),
+                    name = shown_sender_name,
                     size = 40.dp,
-                    sender_authenticated = system_avatar_authenticated(msg),
-                    profile_picture_url = if (msg.sender_email.lowercase() == my_email) my_profile_pic else null,
+                    sender_authenticated = !marks_hidden &&
+                        trust?.warning == null &&
+                        system_avatar_authenticated(msg),
+                    profile_picture_url = if (is_own_message) my_profile_pic else null,
+                    plain = marks_hidden,
                 )
             }
             Spacer(Modifier.width(AsterSpacing.md))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = if (is_undecryptable) stringResource(R.string.encrypted)
-                            else displayed_sender_name(msg.display_sender_name, msg.sender_name),
+                        text = if (is_undecryptable) stringResource(R.string.encrypted) else shown_sender_name,
                         color = colors.text_primary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -4455,6 +4961,12 @@ private object action_menu_position_provider : PopupPositionProvider {
 }
 
 private val action_menu_shadow_gutter = 22.dp
+private val action_menu_anchor_gap = 4.dp
+private val action_menu_screen_margin = 12.dp
+
+private class action_menu_placement {
+    var upward by mutableStateOf(false)
+}
 
 @Composable
 internal fun action_menu_sheet(
@@ -4474,8 +4986,11 @@ internal fun action_menu_sheet(
     on_snooze: () -> Unit = {},
     on_label: () -> Unit = {},
     on_customize_toolbar: () -> Unit = {},
+    anchor: IntRect? = null,
 ) {
     val colors = AsterMaterial.colors
+    val parent_view = LocalView.current
+    val placement = remember { action_menu_placement() }
     val visible_state = remember { MutableTransitionState(false) }
     visible_state.targetState = expanded
     if (!visible_state.currentState && !visible_state.targetState) return
@@ -4491,6 +5006,94 @@ internal fun action_menu_sheet(
         onDismissRequest = on_close,
         properties = PopupProperties(focusable = true),
     ) {
+        val popup_view = LocalView.current
+        val layout_direction = LocalLayoutDirection.current
+        val bars = WindowInsets.systemBars
+        val origin = when {
+            anchor == null -> TransformOrigin(1f, 1f)
+            layout_direction == LayoutDirection.Rtl -> TransformOrigin(0f, if (placement.upward) 1f else 0f)
+            else -> TransformOrigin(1f, if (placement.upward) 1f else 0f)
+        }
+        val menu: @Composable (Modifier) -> Unit = { menu_modifier ->
+            AnimatedVisibility(
+                visibleState = visible_state,
+                modifier = menu_modifier,
+                enter = fadeIn(
+                        animationSpec = tween(
+                            menu_pop_fade_enter,
+                            easing = AsterEasing.menu_enter,
+                        ),
+                    ) +
+                        scaleIn(
+                            animationSpec = tween(
+                                menu_pop_enter,
+                                easing = AsterEasing.menu_enter,
+                            ),
+                            initialScale = org.astermail.android.design.AsterScale.menu_enter_from,
+                            transformOrigin = origin,
+                        ),
+                    exit = fadeOut(animationSpec = tween(menu_pop_fade_exit)) +
+                        scaleOut(
+                            animationSpec = tween(
+                                menu_pop_exit,
+                                easing = AsterEasing.menu_exit,
+                            ),
+                            targetScale = org.astermail.android.design.AsterScale.menu_exit_to,
+                            transformOrigin = origin,
+                        ),
+                ) {
+                    aster_menu_surface(
+                        modifier = Modifier.testTag("action_menu"),
+                        min_width = 240.dp,
+                        max_width = 320.dp,
+                        max_height = 460.dp,
+                    ) {
+                        aster_menu_item(stringResource(R.string.reply), on_reply, icon = TablerIcons.ArrowBackUp.auto_mirrored())
+                        aster_menu_item(stringResource(R.string.reply_all), on_reply_all, icon = TablerIcons.ArrowsLeft)
+                        aster_menu_item(stringResource(R.string.forward), on_forward, icon = TablerIcons.MailForward)
+                        aster_menu_item(
+                            if (is_starred) stringResource(R.string.unstar) else stringResource(R.string.star),
+                            on_star,
+                            icon = TablerIcons.Star,
+                        )
+                        aster_menu_item(stringResource(R.string.mark_as_unread), on_mark_unread, icon = TablerIcons.Mail)
+                        aster_menu_item(stringResource(R.string.label), on_label, icon = TablerIcons.Tag)
+                        aster_menu_item(stringResource(R.string.snooze), on_snooze, icon = TablerIcons.Moon)
+                        aster_menu_item(
+                            if (is_archived) stringResource(R.string.swipe_move_to_inbox) else stringResource(R.string.swipe_archive),
+                            on_archive,
+                            icon = if (is_archived) TablerIcons.Inbox else TablerIcons.Archive,
+                        )
+                        if (is_spam) {
+                            aster_menu_item(
+                                stringResource(R.string.swipe_not_spam),
+                                on_spam,
+                                icon = spam_action_icon(is_spam = true),
+                                tint = colors.accent_blue,
+                            )
+                        } else {
+                            aster_menu_item(
+                                stringResource(R.string.report_spam),
+                                on_spam,
+                                icon = spam_action_icon(is_spam = false),
+                                destructive = true,
+                            )
+                        }
+                        aster_menu_item(
+                            stringResource(R.string.move_to_trash),
+                            on_trash,
+                            icon = TablerIcons.Trash,
+                            destructive = true,
+                        )
+                        aster_menu_item(
+                            stringResource(R.string.customize_toolbar),
+                            on_customize_toolbar,
+                            icon = TablerIcons.Adjustments,
+                            tint = colors.text_secondary,
+                        )
+                    }
+                }
+        }
         Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
@@ -4501,85 +5104,52 @@ internal fun action_menu_sheet(
                         onClick = on_close,
                     ),
             )
-            AnimatedVisibility(
-                visibleState = visible_state,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .navigationBarsPadding()
-                    .padding(end = action_menu_shadow_gutter, bottom = action_menu_shadow_gutter),
-                enter = fadeIn(
-                    animationSpec = tween(
-                        menu_pop_fade_enter,
-                        easing = AsterEasing.menu_enter,
-                    ),
-                ) +
-                    scaleIn(
-                        animationSpec = tween(
-                            menu_pop_enter,
-                            easing = AsterEasing.menu_enter,
+            if (anchor == null) {
+                menu(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = action_menu_shadow_gutter, bottom = action_menu_shadow_gutter),
+                )
+            } else {
+                Layout(
+                    content = { menu(Modifier) },
+                    modifier = Modifier.fillMaxSize(),
+                ) { measurables, constraints ->
+                    val margin = action_menu_screen_margin.roundToPx()
+                    val gap = action_menu_anchor_gap.roundToPx()
+                    val top_limit = bars.getTop(this) + margin
+                    val bottom_limit = constraints.maxHeight - bars.getBottom(this) - margin
+                    val placeable = measurables.first().measure(
+                        Constraints(
+                            maxWidth = (constraints.maxWidth - margin * 2).coerceAtLeast(0),
+                            maxHeight = (bottom_limit - top_limit).coerceAtLeast(0),
                         ),
-                        initialScale = org.astermail.android.design.AsterScale.menu_enter_from,
-                        transformOrigin = TransformOrigin(1f, 1f),
-                    ),
-                exit = fadeOut(animationSpec = tween(menu_pop_fade_exit)) +
-                    scaleOut(
-                        animationSpec = tween(
-                            menu_pop_exit,
-                            easing = AsterEasing.menu_exit,
-                        ),
-                        targetScale = org.astermail.android.design.AsterScale.menu_exit_to,
-                        transformOrigin = TransformOrigin(1f, 1f),
-                    ),
-            ) {
-                aster_menu_surface(
-                    modifier = Modifier.testTag("action_menu"),
-                    min_width = 240.dp,
-                    max_width = 320.dp,
-                    max_height = 460.dp,
-                ) {
-                    aster_menu_item(stringResource(R.string.reply), on_reply, icon = TablerIcons.ArrowBackUp.auto_mirrored())
-                    aster_menu_item(stringResource(R.string.reply_all), on_reply_all, icon = TablerIcons.ArrowsLeft)
-                    aster_menu_item(stringResource(R.string.forward), on_forward, icon = TablerIcons.MailForward)
-                    aster_menu_item(
-                        if (is_starred) stringResource(R.string.unstar) else stringResource(R.string.star),
-                        on_star,
-                        icon = TablerIcons.Star,
                     )
-                    aster_menu_item(stringResource(R.string.mark_as_unread), on_mark_unread, icon = TablerIcons.Mail)
-                    aster_menu_item(stringResource(R.string.label), on_label, icon = TablerIcons.Tag)
-                    aster_menu_item(stringResource(R.string.snooze), on_snooze, icon = TablerIcons.Moon)
-                    aster_menu_item(
-                        if (is_archived) stringResource(R.string.swipe_move_to_inbox) else stringResource(R.string.swipe_archive),
-                        on_archive,
-                        icon = if (is_archived) TablerIcons.Inbox else TablerIcons.Archive,
-                    )
-                    if (is_spam) {
-                        aster_menu_item(
-                            stringResource(R.string.swipe_not_spam),
-                            on_spam,
-                            icon = TablerIcons.ShieldCheck,
-                            tint = colors.accent_blue,
-                        )
-                    } else {
-                        aster_menu_item(
-                            stringResource(R.string.report_spam),
-                            on_spam,
-                            icon = TablerIcons.AlertTriangle,
-                            destructive = true,
-                        )
+                    layout(constraints.maxWidth, constraints.maxHeight) {
+                        val parent_screen = IntArray(2).also { parent_view.getLocationOnScreen(it) }
+                        val parent_window = IntArray(2).also { parent_view.getLocationInWindow(it) }
+                        val popup_screen = IntArray(2).also { popup_view.getLocationOnScreen(it) }
+                        val dx = parent_screen[0] - parent_window[0] - popup_screen[0]
+                        val dy = parent_screen[1] - parent_window[1] - popup_screen[1]
+                        val left = anchor.left + dx
+                        val right = anchor.right + dx
+                        val top = anchor.top + dy
+                        val bottom = anchor.bottom + dy
+                        val width = constraints.maxWidth
+                        val raw_x = if (layout_direction == LayoutDirection.Rtl) left else right - placeable.width
+                        val x = raw_x.coerceIn(margin, (width - placeable.width - margin).coerceAtLeast(margin))
+                        val below = bottom + gap
+                        val above = top - gap - placeable.height
+                        val upward = below + placeable.height > bottom_limit && above >= top_limit
+                        if (placement.upward != upward) placement.upward = upward
+                        val y = if (upward) {
+                            above
+                        } else {
+                            below.coerceAtMost((bottom_limit - placeable.height).coerceAtLeast(top_limit))
+                        }
+                        placeable.place(x, y)
                     }
-                    aster_menu_item(
-                        stringResource(R.string.move_to_trash),
-                        on_trash,
-                        icon = TablerIcons.Trash,
-                        destructive = true,
-                    )
-                    aster_menu_item(
-                        stringResource(R.string.customize_toolbar),
-                        on_customize_toolbar,
-                        icon = TablerIcons.Adjustments,
-                        tint = colors.text_secondary,
-                    )
                 }
             }
         }
@@ -4690,6 +5260,8 @@ private fun snooze_detail_label(iso: String): String {
     return millis.format_full_datetime()
 }
 
+internal const val PICKER_TREE_INDENT_DP = 18
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun label_picker_sheet(
@@ -4700,6 +5272,7 @@ internal fun label_picker_sheet(
     on_pick: (org.astermail.android.api.labels.LabelItem) -> Unit,
     applied_tokens: Set<String> = emptySet(),
     on_move_to_inbox: (() -> Unit)? = null,
+    depths: Map<String, Int> = emptyMap(),
 ) {
     val colors = AsterMaterial.colors
     val state = rememberModalBottomSheetState()
@@ -4714,6 +5287,7 @@ internal fun label_picker_sheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding(),
         ) {
             Text(
@@ -4749,6 +5323,7 @@ internal fun label_picker_sheet(
                     val display = item.encrypted_name?.takeIf { it.isNotBlank() }
                         ?: stringResource(R.string.unnamed_folder)
                     val applied = item.label_token in applied_tokens
+                    val depth = (depths[item.label_token] ?: 0).coerceAtLeast(0)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4756,6 +5331,7 @@ internal fun label_picker_sheet(
                             .padding(horizontal = AsterSpacing.xl, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (depth > 0) Spacer(Modifier.width((depth * PICKER_TREE_INDENT_DP).dp))
                         Icon(
                             imageVector = TablerIcons.Folder,
                             contentDescription = null,
@@ -4814,6 +5390,7 @@ internal fun tag_picker_sheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding(),
         ) {
             Text(
@@ -4836,8 +5413,10 @@ internal fun tag_picker_sheet(
                     modifier = Modifier.padding(horizontal = AsterSpacing.xl, vertical = AsterSpacing.md),
                 )
             } else {
-                val unknown_tag_label = stringResource(R.string.unknown)
-                items.forEach { item ->
+                val unknown_tag_label = stringResource(R.string.label_decrypt_failed)
+                val tag_nodes = remember(items) { org.astermail.android.labels.flatten_tag_tree(items) }
+                tag_nodes.forEach { node ->
+                    val item = node.tag
                     val display = org.astermail.android.labels.tag_display_name(item, unknown_tag_label)
                     val tag_color = try {
                         item.encrypted_color?.let { androidx.compose.ui.graphics.Color(android.graphics.Color.parseColor(it)) }
@@ -4849,6 +5428,9 @@ internal fun tag_picker_sheet(
                             .padding(horizontal = AsterSpacing.xl, vertical = AsterSpacing.md),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        if (node.depth > 0) {
+                            Spacer(Modifier.width((node.depth * PICKER_TREE_INDENT_DP).dp))
+                        }
                         Box(
                             modifier = Modifier
                                 .size(12.dp)
@@ -5163,14 +5745,81 @@ internal class mail_body_web_view(
     var selection_active: Boolean = false
         private set
 
+    var selection_gesture: Boolean = false
+        private set
+
+    fun end_selection_gesture() {
+        selection_gesture = false
+    }
+
+    var on_width_change: (() -> Unit)? = null
+
+    var on_horizontal_scroll: ((Int, Int, Int) -> Unit)? = null
+
+    fun horizontal_scroll_range(): Int = computeHorizontalScrollRange()
+
+    fun horizontal_scroll_extent(): Int = computeHorizontalScrollExtent()
+
+    fun report_horizontal_scroll() {
+        on_horizontal_scroll?.invoke(
+            computeHorizontalScrollOffset(),
+            computeHorizontalScrollExtent(),
+            computeHorizontalScrollRange(),
+        )
+    }
+
+    private var pinching: Boolean = false
+
+    private fun vertical_scroll_allowed(): Boolean =
+        pinching || height >= max_body_layout_px - remeasure_viewport_slack_px
+
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> pinching = false
+            android.view.MotionEvent.ACTION_POINTER_DOWN -> pinching = true
+        }
+        val handled = super.dispatchTouchEvent(event)
+        if (event.actionMasked == android.view.MotionEvent.ACTION_UP ||
+            event.actionMasked == android.view.MotionEvent.ACTION_CANCEL
+        ) {
+            pinching = false
+            if (scrollY != 0 && !vertical_scroll_allowed()) scrollTo(scrollX, 0)
+        }
+        return handled
+    }
+
+    override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+        super.onScrollChanged(l, t, oldl, oldt)
+        if (l != oldl) report_horizontal_scroll()
+        if (t != 0 && !vertical_scroll_allowed()) scrollTo(l, 0)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (body_width_changed(oldw, w)) on_width_change?.invoke()
+    }
+
     private fun wrap(
         callback: android.view.ActionMode.Callback,
-    ): android.view.ActionMode.Callback = object : android.view.ActionMode.Callback {
+    ): android.view.ActionMode.Callback = object : android.view.ActionMode.Callback2() {
+        override fun onGetContentRect(
+            mode: android.view.ActionMode,
+            view: android.view.View?,
+            out_rect: android.graphics.Rect,
+        ) {
+            if (callback is android.view.ActionMode.Callback2) {
+                callback.onGetContentRect(mode, view, out_rect)
+            } else {
+                super.onGetContentRect(mode, view, out_rect)
+            }
+        }
+
         override fun onCreateActionMode(
             mode: android.view.ActionMode,
             menu: android.view.Menu,
         ): Boolean {
             selection_active = true
+            selection_gesture = true
             parent?.requestDisallowInterceptTouchEvent(true)
             return callback.onCreateActionMode(mode, menu)
         }
@@ -5187,6 +5836,7 @@ internal class mail_body_web_view(
 
         override fun onDestroyActionMode(mode: android.view.ActionMode) {
             selection_active = false
+            selection_gesture = false
             parent?.requestDisallowInterceptTouchEvent(false)
             callback.onDestroyActionMode(mode)
         }
@@ -5238,7 +5888,7 @@ internal fun configure_mail_body_web_view(
     @Suppress("DEPRECATION")
     web.settings.savePassword = false
     web.isVerticalScrollBarEnabled = false
-    web.isHorizontalScrollBarEnabled = true
+    web.isHorizontalScrollBarEnabled = false
     web.overScrollMode = android.view.View.OVER_SCROLL_IF_CONTENT_SCROLLS
     web.isNestedScrollingEnabled = false
 }
@@ -5261,6 +5911,21 @@ private suspend fun await_web_visual_state(web: android.webkit.WebView) {
 @Suppress("DEPRECATION")
 private fun web_viewport_css_height(web: android.webkit.WebView): Int =
     if (web.scale > 0f) (web.height / web.scale).toInt() else 0
+
+private fun web_overflows_sideways(web: android.webkit.WebView): Boolean {
+    val body = web as? mail_body_web_view ?: return false
+    return body_overflows_sideways(body.horizontal_scroll_range(), body.horizontal_scroll_extent())
+}
+
+private fun web_height_viewport_filled(web: android.webkit.WebView, content_css: Int): Boolean {
+    val body = web as? mail_body_web_view ?: return false
+    return body_height_viewport_filled(
+        content_css = content_css,
+        viewport_css = web_viewport_css_height(web),
+        scroll_range = body.horizontal_scroll_range(),
+        scroll_extent = body.horizontal_scroll_extent(),
+    )
+}
 
 private class height_channel(private val on_height: (Int, Boolean) -> Unit) {
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -5412,17 +6077,6 @@ private fun email_image_client(context: android.content.Context): okhttp3.OkHttp
                     64L * 1024 * 1024,
                 ),
             )
-            .addNetworkInterceptor { chain ->
-                val resp = chain.proceed(chain.request())
-                if (resp.isSuccessful) {
-                    resp.newBuilder()
-                        .header("Cache-Control", "max-age=86400")
-                        .removeHeader("Pragma")
-                        .build()
-                } else {
-                    resp
-                }
-            }
             .build()
             .apply {
                 dispatcher.maxRequests = 64
@@ -5433,6 +6087,12 @@ private fun email_image_client(context: android.content.Context): okhttp3.OkHttp
 }
 
 private val mail_detail_image_lock = Any()
+
+internal fun evict_email_image_cache() {
+    synchronized(mail_detail_image_lock) {
+        runCatching { email_image_client_instance?.cache?.evictAll() }
+    }
+}
 
 private sealed interface TranslationBannerState {
     object Hidden : TranslationBannerState
@@ -5544,7 +6204,10 @@ private fun translation_banner(
             }
             is TranslationBannerState.WebViewOutdated -> {
                 Text(
-                    text = stringResource(R.string.translation_webview_outdated),
+                    text = stringResource(
+                        R.string.translation_webview_outdated,
+                        org.astermail.android.translation.TranslationRuntime.webview_name(LocalContext.current),
+                    ),
                     color = colors.text_primary,
                     fontSize = 13.sp,
                     modifier = Modifier.weight(1f),
@@ -5588,21 +6251,6 @@ private fun translation_banner(
     }
 }
 
-internal fun Modifier.email_glass_backing_below(
-    top: Float,
-    color: Color,
-): Modifier = if (top < 0f || color.alpha <= 0f) {
-    this
-} else {
-    drawBehind {
-        drawRect(
-            color = color,
-            topLeft = androidx.compose.ui.geometry.Offset(0f, top),
-            size = androidx.compose.ui.geometry.Size(size.width, size.height - top),
-        )
-    }
-}
-
 @Composable
 internal fun email_html_view(
     html: String,
@@ -5614,8 +6262,11 @@ internal fun email_html_view(
     on_ready: () -> Unit = {},
     on_link_click: (String) -> Unit = {},
     on_image_click: (String) -> Unit = {},
-    on_glass_backing: (Color) -> Unit = {},
 ) {
+    val webview_usable = org.astermail.android.ui.common.remember_webview_usable()
+    LaunchedEffect(webview_usable) {
+        if (!webview_usable) on_ready()
+    }
     val colors = AsterMaterial.colors
     val settings_vm: SettingsViewModel = shared_settings_view_model()
     val settings_state by settings_vm.state.collectAsStateWithLifecycle()
@@ -5634,6 +6285,7 @@ internal fun email_html_view(
     }
     val link_hex = String.format(java.util.Locale.US, "#%06X", colors.accent_blue.toArgb() and 0xFFFFFF)
 
+    val pan_signal = local_horizontal_pan_signal.current
     val screen_width_dp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
     val text_zoom = when (settings_state.preferences?.font_size_scale) {
         "small" -> 85
@@ -5698,6 +6350,7 @@ internal fun email_html_view(
         arrayOfNulls<org.astermail.android.translation.translation_engine>(1)
     }
     val source_body_ref = remember(html) { arrayOfNulls<String>(1) }
+    var source_body_version by remember(html) { mutableStateOf(0) }
     var translated_body by remember(html) { mutableStateOf<String?>(null) }
     val translation_scope = androidx.compose.runtime.rememberCoroutineScope()
     val translation_from_ref = remember { arrayOfNulls<String>(1) }
@@ -5839,6 +6492,9 @@ internal fun email_html_view(
     val last_window_y = remember { floatArrayOf(Float.NaN) }
     val has_toggles_ref = remember { booleanArrayOf(true) }
     val reload_policy = remember(height_cache_key) { body_reload_policy() }
+    val height_guard = remember(height_cache_key) { body_height_guard() }
+    val growth_guard = remember(height_cache_key) { body_growth_guard() }
+    val height_recheck = remember(height_cache_key) { mutableStateOf(false) }
     val web_view_context = androidx.compose.ui.platform.LocalContext.current
     val web_view_missing = remember(height_cache_key) { !web_view_support.is_available(web_view_context) }
     val renderer_exhausted = remember(height_cache_key) { mutableStateOf(web_view_missing) }
@@ -5870,6 +6526,8 @@ internal fun email_html_view(
     val translate_active = translate_active_early
     val translate_active_ref = remember { booleanArrayOf(false) }
     translate_active_ref[0] = translate_active
+    val allow_external_ref = remember { booleanArrayOf(false) }
+    allow_external_ref[0] = allow_external
     val cache_key = remember(html_hash, allow_external, bg_hex, screen_width_dp, force_dark_emails, translate_active, dyslexia_font, email_font_id, text_zoom, sanitize_options, underline_links) { ((((html_cache.key(html_hash, allow_external, bg_hex, screen_width_dp, force_dark_emails, translate_active) * 31L + (if (dyslexia_font) 1L else 0L)) * 31L + email_font_id.hashCode().toLong()) * 31L + text_zoom.toLong()) * 31L + sanitize_options.hashCode().toLong()) * 31L + (if (underline_links) 1L else 0L) }
     var prebuilt_html by remember(html_hash, allow_external, translate_active, dyslexia_font, email_font_id, text_zoom, sanitize_options, underline_links) { mutableStateOf<String?>(if (html.isEmpty()) null else html_cache.get(cache_key)) }
     var loaded_built by remember { mutableStateOf("") }
@@ -5895,8 +6553,15 @@ internal fun email_html_view(
                 scale_ref[0] = natural_scale
                 zoom_scale_ref[0] = natural_scale
                 if (zoom_last_ref[0] > 0f) zoom_base_ref[0] = zoom_last_ref[0]
+                growth_guard.reset()
             }
-            val visual_h = (h * scale_ref[0]).toInt().coerceAtMost(max_body_height_px)
+            val reported_h = (h * scale_ref[0]).toInt().coerceAtMost(max_body_height_px)
+            val visual_h = if (has_measured && exact && !forced) {
+                growth_guard.settle(content_height_dp.value.toInt(), reported_h)
+            } else {
+                reported_h
+            }
+            if (exact && height_guard.should_remeasure_capped(visual_h, max_body_height_px)) height_recheck.value = true
             val new_dp = visual_h.dp
             fun remember_known_height(value: Float) {
                 if (!is_natural || value <= 0f) return
@@ -5977,10 +6642,11 @@ internal fun email_html_view(
         val cached = html_cache.get(cache_key)
         if (cached != null) {
             prebuilt_html = cached
-            if (source_body_ref[0] == null) {
+            if (needs_cached_translation_source(source_body_ref[0], translate_active)) {
                 source_body_ref[0] = withContext(Dispatchers.Default) {
                     runCatching { proxy_html(EmailHtmlSanitizer.sanitize(html, sanitize_options)) }.getOrNull()
                 }
+                source_body_version++
             }
             return@LaunchedEffect
         }
@@ -6017,11 +6683,13 @@ internal fun email_html_view(
                 continue
             }
             val web = web_ref[0] ?: continue
+            if (!body_width_measurable(web.width, web.resources.displayMetrics.density)) continue
             val content = web.contentHeight
             if (content <= 0) continue
             @Suppress("DEPRECATION")
             val viewport_floor = if (web.scale > 0f) (web.height / web.scale).toInt() else 0
-            if (!probed && !has_measured && !body_shown && content <= viewport_floor + 2) {
+            val filled = web_height_viewport_filled(web, content)
+            if (!probed && !has_measured && !body_shown && (content <= viewport_floor + 2 || filled)) {
                 probed = true
                 measure_probe.value = true
                 last_reported = 0
@@ -6037,11 +6705,11 @@ internal fun email_html_view(
                 stable_ms = 0L
                 exact_sent = false
                 last_reported = content
-                height_sink.report(content, exact = false)
+                if (!(filled && has_measured)) height_sink.report(content, exact = false)
             }
             if (!exact_sent && stable_ms >= height_watch_exact_stable_ms) {
                 exact_sent = true
-                height_sink.report(content, exact = true)
+                if (!(filled && has_measured)) height_sink.report(content, exact = true)
                 measure_probe.value = false
             }
             if (has_measured && stable_ms >= height_watch_settle_ms) break
@@ -6050,7 +6718,9 @@ internal fun email_html_view(
         height_settled = true
         if (!has_measured) {
             val web = web_ref[0]
-            val native = if (web != null && web.contentHeight > 0) {
+            val native = if (web != null && web.contentHeight > 0 &&
+                body_width_measurable(web.width, web.resources.displayMetrics.density)
+            ) {
                 (web.contentHeight * web.scale / web.resources.displayMetrics.density).toInt().dp
             } else {
                 0.dp
@@ -6076,7 +6746,7 @@ internal fun email_html_view(
             if ((first_web as? mail_body_web_view)?.selection_active == true) return@LaunchedEffect
             await_web_visual_state(first_web)
             val grown = first_web.contentHeight
-            if (grown > 0 && (grown * scale_ref[0]) > start_dp.value + 8f) {
+            if (grown > 0 && (grown * scale_ref[0]) > start_dp.value + 8f && !web_overflows_sideways(first_web)) {
                 probe_hold_dp.value = start_dp
                 probe_height_dp.value = (grown * scale_ref[0]).coerceAtMost(max_body_height_px.toFloat()).dp
                 measure_probe.value = true
@@ -6117,6 +6787,7 @@ internal fun email_html_view(
                     }
                 }
                 if (last <= 0) return null
+                if (web_height_viewport_filled(web, last)) return 0
                 return if (last > web_viewport_css_height(web) + remeasure_viewport_slack_px) last else 0
             }
 
@@ -6214,7 +6885,7 @@ internal fun email_html_view(
         }
     }
 
-    LaunchedEffect(has_measured, translate_mode, translate_accepted, prebuilt_html) {
+    LaunchedEffect(has_measured, translate_mode, translate_accepted, prebuilt_html, source_body_version) {
         if (!has_measured || translate_mode == "off") return@LaunchedEffect
         if (translated_body != null) return@LaunchedEffect
         delay(150)
@@ -6261,6 +6932,7 @@ internal fun email_html_view(
                     zoom_active = false
                     return
                 }
+                (view as? mail_body_web_view)?.report_horizontal_scroll()
                 if (zoom_base_ref[0] <= 0f) zoom_base_ref[0] = newScale
                 val ratio = newScale / zoom_base_ref[0]
                 scale_ref[0] = if (is_nl_ref[0]) nl_scale_ref[0] else ratio
@@ -6274,7 +6946,7 @@ internal fun email_html_view(
                     return
                 }
                 zoom_active = true
-                content_height_dp = (base_dp * ratio).coerceIn(1f, 24000f).dp
+                content_height_dp = zoomed_body_height_dp(base_dp, ratio, max_body_height_px).dp
             }
 
             override fun onRenderProcessGone(
@@ -6349,10 +7021,25 @@ internal fun email_html_view(
                     }
                     return null
                 }
-                if (req_uri.scheme != "https") return null
-                if (req_uri.host != "app.astermail.org") return null
-                if (req_uri.path != "/api/images/v1/proxy") return null
-                if (req_uri.getQueryParameter("url").isNullOrBlank()) return null
+                if (request.isForMainFrame) return null
+                val request_action = mail_body_request_action(
+                    scheme = req_uri.scheme,
+                    host = req_uri.host,
+                    path = req_uri.path,
+                    proxied_url = try { req_uri.getQueryParameter("url") } catch (_: Throwable) { null },
+                    allow_external = allow_external_ref[0],
+                )
+                if (request_action == MailBodyRequestAction.LOCAL) return null
+                if (request_action == MailBodyRequestAction.BLOCK) {
+                    return android.webkit.WebResourceResponse(
+                        "text/plain",
+                        null,
+                        403,
+                        "Forbidden",
+                        mapOf("Cache-Control" to "no-store"),
+                        java.io.ByteArrayInputStream(ByteArray(0)),
+                    )
+                }
                 fun image_response(
                     content_type: String,
                     stream: java.io.InputStream,
@@ -6426,6 +7113,12 @@ internal fun email_html_view(
         on_update_webview = { org.astermail.android.translation.TranslationRuntime.open_webview_update(translate_context) },
       )
       val body_ready_now = html.isNotEmpty() && has_measured && height_settled && page_painted.value
+      LaunchedEffect(height_recheck.value, body_shown) {
+          if (height_recheck.value && body_shown) {
+              height_recheck.value = false
+              remeasure_trigger.value += 1
+          }
+      }
       LaunchedEffect(body_ready_now) {
           if (body_ready_now) {
               body_shown = true
@@ -6451,8 +7144,6 @@ internal fun email_html_view(
                     .background(androidx.compose.ui.graphics.Color.White),
             )
         }
-        val glass_backing = email_glass_backing(colors, white_page_ref[0] || force_light)
-        androidx.compose.runtime.SideEffect { on_glass_backing(glass_backing) }
         if (renderer_exhausted.value) {
             val fallback_text = remember(html) { org.astermail.android.mail.html_to_plain_text(html) }
             val fallback_color = remember(fg_hex) {
@@ -6483,16 +7174,24 @@ internal fun email_html_view(
                 .clipToBounds(),
             contentAlignment = Alignment.TopCenter,
         ) {
-        androidx.compose.runtime.key(web_generation) {
+        if (!webview_usable) {
+            org.astermail.android.ui.common.webview_unavailable_notice()
+        } else androidx.compose.runtime.key(web_generation) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { ctx ->
                 mail_body_web_view(ctx).apply {
                     configure_mail_body_web_view(this, text_zoom, allow_external)
+                    on_width_change = { height_recheck.value = true }
+                    on_horizontal_scroll = { offset, extent, range -> pan_signal?.report(offset, extent, range) }
                     var touch_down_x = 0f
                     var touch_down_y = 0f
                     var multi_touch = false
                     setOnTouchListener { v, ev ->
-                        if ((v as? mail_body_web_view)?.selection_active == true) {
+                        val body = v as? mail_body_web_view
+                        if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                            body?.end_selection_gesture()
+                        }
+                        if (body?.selection_gesture == true) {
                             v.parent?.requestDisallowInterceptTouchEvent(true)
                             return@setOnTouchListener false
                         }
@@ -6642,6 +7341,7 @@ internal fun email_html_view(
                     .height(animated_target)
                     .clipToBounds()
                     .onGloballyPositioned { coords ->
+                        if (!coords.isAttached) return@onGloballyPositioned
                         val window_y = coords.positionInWindow().y
                         if (window_y != last_window_y[0]) {
                             last_window_y[0] = window_y
@@ -6671,7 +7371,7 @@ internal fun email_html_view(
             email_body_skeleton(
                 modifier = Modifier
                     .matchParentSize()
-                    .background(inbox_card_read_color(colors))
+                    .background(if (colors.is_translucent) Color.Transparent else inbox_card_read_color(colors))
                     .clipToBounds()
                     .align(Alignment.TopStart),
             )
@@ -6740,7 +7440,7 @@ private fun link_options_sheet(
                         type = "text/plain"
                         putExtra(android.content.Intent.EXTRA_TEXT, url)
                     }
-                    context.startActivity(android.content.Intent.createChooser(send, null))
+                    runCatching { context.startActivity(android.content.Intent.createChooser(send, null)) }
                     on_close()
                 }
             }
@@ -6977,41 +7677,24 @@ private fun open_attachment_externally(
 ): Boolean {
     val mime = safe_view_mime(filename, content_type)
     val safe_name = sanitize_filename(filename)
-    val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, safe_name)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val pending = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return false
-        context.contentResolver.openOutputStream(pending)?.use {
-            it.write(bytes)
-            it.flush()
-        } ?: return false
-        val done = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
-        context.contentResolver.update(pending, done, null, null)
-        pending
-    } else {
-        val dir = java.io.File(context.cacheDir, "shared_attachments").apply { mkdirs() }
-        val target = java.io.File(dir, System.nanoTime().toString() + "_" + safe_name)
-        target.outputStream().use {
-            it.write(bytes)
-            it.flush()
-        }
-        androidx.core.content.FileProvider.getUriForFile(
-            context,
-            context.packageName + ".fileprovider",
-            target,
-        )
-    }
+    val target = org.astermail.android.share.write_opened_attachment(context.cacheDir, safe_name, bytes)
+    val uri = androidx.core.content.FileProvider.getUriForFile(
+        context,
+        context.packageName + ".fileprovider",
+        target,
+    )
     val intent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, mime)
+        clipData = android.content.ClipData.newRawUri(safe_name, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
-    context.startActivity(intent)
+    try {
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        runCatching { target.parentFile?.deleteRecursively() }
+        throw e
+    }
     return true
 }
 
@@ -7253,6 +7936,26 @@ private fun attachment_preview_dialog(
     val colors = AsterMaterial.colors
     val ct = attachment.content_type.lowercase()
     val context = LocalContext.current
+    val open_externally = {
+        try {
+            val opened = open_attachment_externally(
+                context,
+                attachment.filename,
+                attachment.content_type,
+                bytes,
+            )
+            if (!opened) {
+                Toast.makeText(context, context.getString(R.string.no_app_to_open), Toast.LENGTH_SHORT).show()
+            }
+        } catch (_: Throwable) {
+            Toast.makeText(context, context.getString(R.string.no_app_to_open), Toast.LENGTH_SHORT).show()
+        }
+    }
+    val share = {
+        if (!share_attachment(context, attachment.filename, attachment.content_type, bytes)) {
+            Toast.makeText(context, context.getString(R.string.no_app_to_open), Toast.LENGTH_SHORT).show()
+        }
+    }
 
     BackHandler { on_close() }
 
@@ -7271,123 +7974,52 @@ private fun attachment_preview_dialog(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .zIndex(1f)
                     .height(64.dp)
-                    .padding(horizontal = 4.dp),
+                    .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                AsterIconButton(
-                    icon = TablerIcons.X,
-                    content_description = stringResource(R.string.close),
-                    onClick = on_close,
-                    tint = Color.White,
-                    modifier = Modifier.size(48.dp),
-                )
+                attachment_viewer_button(TablerIcons.X, stringResource(R.string.close), "attachment_viewer_close", on_close)
                 Text(
-                    text = attachment.filename,
+                    text = display_filename(attachment.filename),
                     color = Color.White,
-                    fontSize = 18.sp,
+                    fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 )
-                AsterIconButton(
-                    icon = TablerIcons.Download,
-                    content_description = stringResource(R.string.download),
-                    onClick = on_download,
-                    tint = Color.White,
-                    modifier = Modifier.size(48.dp),
+                attachment_viewer_button(
+                    TablerIcons.Share,
+                    stringResource(R.string.share_attachment),
+                    "attachment_viewer_share",
+                    share,
                 )
-                AsterIconButton(
-                    icon = TablerIcons.ExternalLink,
-                    content_description = stringResource(R.string.open_with),
-                    onClick = {
-                        try {
-                            val opened = open_attachment_externally(
-                                context,
-                                attachment.filename,
-                                attachment.content_type,
-                                bytes,
-                            )
-                            if (!opened) {
-                                Toast.makeText(context, context.getString(R.string.no_app_to_open), Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (_: Throwable) {
-                            Toast.makeText(context, context.getString(R.string.no_app_to_open), Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    tint = Color.White,
-                    modifier = Modifier.size(48.dp),
+                attachment_viewer_button(
+                    TablerIcons.Download,
+                    stringResource(R.string.download),
+                    "attachment_viewer_download",
+                    on_download,
+                )
+                attachment_viewer_button(
+                    TablerIcons.ExternalLink,
+                    stringResource(R.string.open_with),
+                    "attachment_viewer_open",
+                    open_externally,
                 )
             }
 
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .weight(1f),
+                    .weight(1f)
+                    .clipToBounds(),
                 contentAlignment = Alignment.Center,
             ) {
                 when {
-                    ct.startsWith("image/") -> {
-                        val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, bytes) {
-                            value = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                runCatching {
-                                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                                    val max_dim = 2048
-                                    var sample = 1
-                                    while (bounds.outWidth / sample > max_dim || bounds.outHeight / sample > max_dim) {
-                                        sample *= 2
-                                    }
-                                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                                }.getOrNull()
-                            }
-                        }
-                        val bmp = bitmap
-                        if (bmp != null) {
-                            androidx.compose.runtime.DisposableEffect(bmp) {
-                                onDispose { runCatching { bmp.recycle() } }
-                            }
-                            var scale by remember { mutableStateOf(1f) }
-                            Image(
-                                bitmap = bmp.asImageBitmap(),
-                                contentDescription = attachment.filename,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(16.dp)
-                                    .graphicsLayer(scaleX = scale, scaleY = scale)
-                                    .pointerInput(Unit) {
-                                        detectTransformGestures { _, _, zoom, _ ->
-                                            scale = (scale * zoom).coerceIn(0.5f, 5f)
-                                        }
-                                    },
-                            )
-                        } else {
-                            Text(stringResource(R.string.cannot_decode_image), color = Color.White.copy(alpha = 0.7f))
-                        }
-                    }
-                    ct.startsWith("text/") -> {
-                        val text = remember(bytes) { String(bytes, Charsets.UTF_8) }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp)
-                                .clip(SquircleShape(8.dp))
-                                .page_surface(colors)
-                                .padding(12.dp),
-                        ) {
-                            val scroll = rememberScrollState()
-                            Text(
-                                text = text,
-                                color = colors.text_primary,
-                                fontSize = 13.sp,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .horizontalScroll(scroll),
-                            )
-                        }
-                    }
+                    ct.startsWith("image/") -> image_attachment_viewer(bytes, display_filename(attachment.filename))
+                    is_text_attachment(ct, attachment.filename) -> text_attachment_viewer(bytes)
                     is_pdf_attachment(ct, attachment.filename) -> pdf_attachment_viewer(
                         bytes = bytes,
                         filename = attachment.filename,
@@ -7397,6 +8029,42 @@ private fun attachment_preview_dialog(
                     else -> attachment_fallback_panel(attachment, ct, bytes, on_download)
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun attachment_viewer_button(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    test_tag: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(52.dp)
+            .testTag(test_tag)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .clickable(
+                role = androidx.compose.ui.semantics.Role.Button,
+                onClickLabel = label,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(Color.White.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp),
+            )
         }
     }
 }
