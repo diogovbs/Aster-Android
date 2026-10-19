@@ -21,6 +21,7 @@
 
 package org.astermail.android.ui.settings.mail_rules.pickers
 
+import org.astermail.android.ui.common.vertical_scroll_with_indicator
 import compose.icons.TablerIcons
 import compose.icons.tablericons.*
 
@@ -300,7 +301,7 @@ fun field_picker(
         )
     }
     base_sheet(on_dismiss = on_dismiss, title = stringResource(R.string.mail_rules_pick_field)) {
-        Column(modifier = Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
+        Column(modifier = Modifier.heightIn(max = 560.dp).vertical_scroll_with_indicator()) {
             sections.forEach { section ->
                 section_header(stringResource(section.title_res))
                 section.items.forEach { item ->
@@ -339,7 +340,7 @@ fun options_picker(
     on_pick: (String) -> Unit,
 ) {
     base_sheet(on_dismiss = on_dismiss, title = title) {
-        Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+        Column(modifier = Modifier.heightIn(max = 480.dp).vertical_scroll_with_indicator()) {
             items.forEach { item ->
                 row_select(
                     label = item.label,
@@ -377,7 +378,7 @@ fun snooze_picker(
     }.getOrNull()
 
     base_sheet(on_dismiss = on_dismiss, title = title) {
-        Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+        Column(modifier = Modifier.heightIn(max = 480.dp).vertical_scroll_with_indicator()) {
             snooze_presets.forEach { (label_res, duration) ->
                 row_select(
                     label = stringResource(label_res),
@@ -600,10 +601,12 @@ fun numeric_value_picker(
                 }
             }
             Spacer(Modifier.height(AsterSpacing.lg))
+            val entered = value.toDoubleOrNull()
             AsterButton(
                 label = stringResource(R.string.mail_rules_confirm),
+                enabled = entered != null && (!is_size || entered > 0.0),
                 onClick = {
-                    val v = value.toDoubleOrNull() ?: 0.0
+                    val v = entered ?: 0.0
                     val multiplier = when (unit) {
                         "KB" -> 1024L
                         "MB" -> 1024L * 1024L
@@ -638,6 +641,7 @@ fun decimal_value_picker(
             Spacer(Modifier.height(AsterSpacing.lg))
             AsterButton(
                 label = stringResource(R.string.mail_rules_confirm),
+                enabled = value.toDoubleOrNull() != null,
                 onClick = {
                     val raw = value.toDoubleOrNull() ?: 0.0
                     val rounded = (raw * 10.0).roundToInt() / 10.0
@@ -842,7 +846,7 @@ fun label_multi_picker(
                 on_create = on_create,
             )
         } else {
-            Column(modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+            Column(modifier = Modifier.heightIn(max = 480.dp).vertical_scroll_with_indicator()) {
                 labels.forEach { l ->
                     row_select(
                         label = l.label,
@@ -853,6 +857,7 @@ fun label_multi_picker(
                         test_tag = "rule_label_${l.label}",
                         icon = l.icon,
                         icon_tint = l.icon_tint,
+                        depth = l.depth,
                     )
                 }
                 if (on_create != null) {

@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -52,6 +53,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.astermail.android.R
 import org.astermail.android.api.mail.MailUserStatsResponse
 import org.astermail.android.crypto.same_address_ignoring_dots
+import org.astermail.android.labels.as_conversation_member
 import org.astermail.android.mail.ratchet.PostQuantumCoverage
 import org.astermail.android.notifications.MailPollingWorker
 import org.astermail.android.api.send.ExternalAttachmentPayload
@@ -59,24 +61,38 @@ import org.astermail.android.ui.mail.MessageAttachment
 
 private const val INBOX_FETCH_BACKSTOP_MS = 50_000L
 private const val PULL_REFRESH_BACKSTOP_MS = 20_000L
+private const val PENDING_DRAIN_BEFORE_REFRESH_MS = 8_000L
 private const val LIVE_SYNC_DEBOUNCE_MS = 600L
 private const val WARM_CACHE_MIN_ITEMS = 8
 private const val WARM_CACHE_WINDOW = 200
 private const val WARM_CACHE_MAX_AGE_MS = 300_000L
 private const val WARM_CACHE_STALE_MAX_AGE_MS = 86_400_000L
-private const val BULK_ACTION_CONCURRENCY = 6
 private const val RESTORE_PROTECTION_MS = 15_000L
 private const val REMOVAL_PROTECTION_MS = 15_000L
 private const val STATS_TTL_MS = 30_000L
+private const val RESUME_FRESH_MS = 20_000L
+private const val RESUME_RETRY_MS = 5_000L
 private const val STATS_DEBOUNCE_MS = 400L
 private const val STATS_DIRTY_MS = 1_200L
 private const val OVERRIDE_TTL_MS = 30_000L
+private const val REACTION_SEEN_OVERRIDE_MS = 30_000L
 private const val READ_OVERRIDE_TTL_MS = 10 * 60_000L
 private const val READ_CONFIRM_GRACE_MS = 15_000L
 private const val TAG_OVERRIDE_TTL_MS = 5 * 60_000L
 private const val TAG_CONFIRM_GRACE_MS = 15_000L
 private const val DECRYPT_RETRY_TIMEOUT_MS = 20_000L
 private const val SEND_GUARD_WINDOW_MS = 30_000L
+private const val OFFLINE_PREFETCH_DELAY_MS = 3_000L
+private const val OFFLINE_WARM_FOLDER_TIMEOUT_MS = 20_000L
+private const val OFFLINE_WARM_FOLDER_FRESH_MS = 10L * 60 * 1000
+private const val OFFLINE_WARM_THREAD_LIMIT = 10
+private const val THREAD_OPEN_TIMEOUT_MS = 30_000L
+private const val SLOW_LINK_THREAD_OPEN_TIMEOUT_MS = 60_000L
+
+private fun thread_open_timeout_ms(): Long =
+    if (org.astermail.android.api.network.low_network_state.extend_timeouts()) SLOW_LINK_THREAD_OPEN_TIMEOUT_MS else THREAD_OPEN_TIMEOUT_MS
+
+private val OFFLINE_WARM_FOLDERS = listOf("sent", "drafts", "starred", "archive", "spam", "trash")
 private const val LOAD_MORE_FAILURE_LIMIT = 3
 private const val LOAD_MORE_RETRY_COOLDOWN_MS = 30_000L
 private const val LOAD_ALL_MAX_PAGES = 5_000
@@ -108,6 +124,7 @@ data class InboxUiState(
     val list_loaded_at: Long = 0L,
     val stats_loaded_at: Long = 0L,
     val cache_pending: Boolean = false,
+    val read_filter: ListReadFilter = ListReadFilter.all,
 )
 
 data class ThreadUiState(
@@ -123,8 +140,21 @@ data class SearchUiState(
     val all_items: List<InboxItem> = emptyList(),
     val is_indexing: Boolean = false,
     val is_indexed: Boolean = false,
+    val is_partial: Boolean = false,
     val error: String? = null,
 )
+
+internal fun search_state_after_index_failure(state: SearchUiState, message: String): SearchUiState {
+    val has_items = state.all_items.isNotEmpty()
+    return state.copy(
+        is_indexing = false,
+        is_indexed = state.is_indexed || has_items,
+        is_partial = has_items,
+        error = if (has_items) null else message,
+    )
+}
+
+data class ListScrollAnchor(val key: String, val offset: Int)
 
 @HiltViewModel
 class MailViewModel @Inject constructor(
@@ -136,7 +166,10 @@ class MailViewModel @Inject constructor(
     private val sent_mail_reseal_finisher: SentMailResealFinisher,
     private val account_data_conversion: AccountDataConversion,
     private val device_recovery: org.astermail.android.auth.DeviceRecovery,
+    ratchet_plaintext_cache: org.astermail.android.mail.ratchet.RatchetPlaintextCache,
 ) : ViewModel() {
+
+    val unauthenticated_message_ids: StateFlow<Set<String>> = ratchet_plaintext_cache.unauthenticated_ids
 
     val identity_changes: StateFlow<List<org.astermail.android.mail.ratchet.IdentityChange>> =
         identity_pins.unacknowledged_changes
@@ -152,7 +185,7 @@ class MailViewModel @Inject constructor(
         viewModelScope.launch { repository.backfill_sender_alias(hash_by_address) }
     }
 
-    private val _inbox_state = MutableStateFlow(InboxUiState(stats = cached_stats_for_account()))
+    private val _inbox_state = MutableStateFlow(InboxUiState(stats = cached_stats_for_account(), cache_pending = true))
     val inbox_state: StateFlow<InboxUiState> = _inbox_state.asStateFlow()
 
     private val _thread_state = MutableStateFlow(ThreadUiState())
@@ -167,8 +200,19 @@ class MailViewModel @Inject constructor(
     fun set_custom_categories(
         rules: List<org.astermail.android.api.preferences.CustomCategoryRule>,
     ) {
-        if (!repository.set_custom_categories(rules)) return
-        on_list_layout_changed { refresh() }
+        val changed = repository.set_custom_categories(rules)
+        val signature = repository.custom_categories_fingerprint.toString(16)
+        if (!changed && folder_cache_store.categories_signature() == signature) return
+        folder_cache_store.set_categories_signature(signature)
+        search_index_manager.expire_inbox_sync()
+        list_scroll_anchors.clear()
+        folder_cache.clear()
+        folder_cache_time.clear()
+        clear_folder_cache_store()
+        folder_cache_store.set_layout_signature(list_layout_signature())
+        replace_on_revalidate = true
+        refresh_job?.cancel()
+        refresh()
     }
 
     fun set_conversation_grouping(enabled: Boolean) {
@@ -218,6 +262,7 @@ class MailViewModel @Inject constructor(
                             emoji = emoji,
                             reactor_email = summary.reactor_email.orEmpty(),
                             is_own = summary.is_own,
+                            is_unseen = summary.is_unseen,
                         ),
                     )
                 } else {
@@ -440,6 +485,10 @@ class MailViewModel @Inject constructor(
     }
 
     private val folder_cache = java.util.concurrent.ConcurrentHashMap<String, InboxUiState>()
+    private val reaction_seen_overrides = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    val list_scroll_anchors = java.util.concurrent.ConcurrentHashMap<String, ListScrollAnchor>()
+    var consumed_scroll_top_token: Int = 0
+    var last_list_scope_key: String = ""
     private val folder_cache_time = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val disk_rows = java.util.concurrent.ConcurrentHashMap<String, List<InboxItem>>()
     private val disk_probed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -470,9 +519,12 @@ class MailViewModel @Inject constructor(
     private var refresh_job: Job? = null
     private var refresh_generation = 0
     private var load_all_remaining_job: Job? = null
+    @Volatile private var filtered_list_time = 0L
+    @Volatile
     private var account_generation = 0
     private val star_overrides = TimedOverrides(OVERRIDE_TTL_MS)
     private val pin_overrides = TimedOverrides(OVERRIDE_TTL_MS)
+    private val category_overrides = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
     private val tag_overrides = TimedOverrides(TAG_OVERRIDE_TTL_MS)
     internal var override_clock_ms: () -> Long = { System.currentTimeMillis() }
     private val read_overrides = TimedOverrides(READ_OVERRIDE_TTL_MS) { override_clock_ms() }
@@ -553,6 +605,7 @@ class MailViewModel @Inject constructor(
                         it.is_loading,
                         it.initial,
                         it.error != null,
+                        it.read_filter,
                     )
                 }
                 .distinctUntilChanged()
@@ -567,7 +620,9 @@ class MailViewModel @Inject constructor(
         is_loading: Boolean,
         initial: Boolean,
         has_error: Boolean,
+        read_filter: ListReadFilter,
     ): Pair<String, List<InboxItem>>? {
+        if (!read_filter_allows_cache_write(read_filter)) return null
         if (!folder_cache_should_persist(items.isEmpty(), is_loading, initial, has_error)) return null
         return folder to items.take(folder_cache_row_limit)
     }
@@ -604,7 +659,7 @@ class MailViewModel @Inject constructor(
     private fun publish_disk_rows(folder: String, rows: List<InboxItem>) {
         val state = _inbox_state.value
         if (state.current_folder != folder) return
-        if (state.items.isNotEmpty() || rows.isEmpty()) {
+        if (state.items.isNotEmpty() || rows.isEmpty() || !read_filter_allows_cache_write(state.read_filter)) {
             if (state.cache_pending) _inbox_state.value = state.copy(cache_pending = false)
             return
         }
@@ -617,7 +672,7 @@ class MailViewModel @Inject constructor(
         items.forEach { item_last_confirmed.putIfAbsent(it.id, warmed_at) }
         _inbox_state.value = state.copy(
             items = apply_demo_overlay(
-                apply_tag_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(items)))),
+                apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_and_reaction_overrides(items))))),
                 folder,
             ),
             initial = false,
@@ -641,6 +696,7 @@ class MailViewModel @Inject constructor(
     )
 
     private fun on_list_layout_changed(user_initiated_reload: () -> Unit) {
+        list_scroll_anchors.clear()
         folder_cache.clear()
         folder_cache_time.clear()
         val signature = list_layout_signature()
@@ -650,6 +706,7 @@ class MailViewModel @Inject constructor(
         }
         clear_folder_cache_store()
         folder_cache_store.set_layout_signature(signature)
+        replace_on_revalidate = true
         user_initiated_reload()
     }
 
@@ -659,6 +716,7 @@ class MailViewModel @Inject constructor(
         val on_undo: (() -> Unit)? = null,
         val duration_ms: Long? = null,
         val on_timeout: (() -> Unit)? = null,
+        val id: Long = org.astermail.android.ui.common.next_toast_key(),
     )
 
     private val _toast_events = MutableSharedFlow<ToastEvent>(extraBufferCapacity = 32)
@@ -707,6 +765,11 @@ class MailViewModel @Inject constructor(
 
     fun reset_for_account_switch() {
         account_generation++
+        list_scroll_anchors.clear()
+        consumed_scroll_top_token = 0
+        offline_prefetch_job?.cancel()
+        offline_prefetch_job = null
+        offline_warmed_at.clear()
         inbox_load_job?.cancel()
         silent_revalidate_job?.cancel()
         refresh_job?.cancel()
@@ -723,6 +786,7 @@ class MailViewModel @Inject constructor(
         stats_owner_account = null
         star_overrides.clear()
         pin_overrides.clear()
+        category_overrides.clear()
         tag_overrides.clear()
         read_overrides.clear()
         read_flips.clear()
@@ -742,12 +806,14 @@ class MailViewModel @Inject constructor(
         _search_state.value = SearchUiState()
         _inbox_attachment_ids.value = emptySet()
         inbox_attachment_probed.clear()
+        search_attachment_cache.clear()
         inbox_attachment_seeded.set(false)
         _thread_participants.value = emptyMap()
         _thread_count_corrections.value = emptyMap()
         repository.clear_account_data()
         runCatching { AsterProfileResolverHolder.shared?.clear() }
         runCatching { OwnAddressAvatars.clear() }
+        runCatching { org.astermail.android.security.SenderTrustStore.clear() }
         runCatching { org.astermail.android.contacts.ContactPhotoDirectory.clear() }
         viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             runCatching { search_index_manager.clear() }
@@ -772,6 +838,72 @@ class MailViewModel @Inject constructor(
         return items.map { item ->
             val override = read_overrides[item.id]
             if (override == null || override == item.is_read) item else item.copy(is_read = override)
+        }
+    }
+
+    private fun apply_read_and_reaction_overrides(items: List<InboxItem>): List<InboxItem> =
+        apply_reaction_seen_overrides(apply_read_overrides(items))
+
+    private fun reaction_seen_keys(item: InboxItem): List<String> = listOfNotNull(
+        item.thread_token?.takeIf { it.isNotBlank() }?.let { "thread:$it" },
+        "item:${item.id}",
+    )
+
+    private fun without_unseen_reaction(item: InboxItem): InboxItem = item.copy(
+        has_unseen_reaction = false,
+        raw_item = item.raw_item.copy(has_unseen_reaction = null),
+    )
+
+    private fun apply_reaction_seen_overrides(items: List<InboxItem>): List<InboxItem> {
+        if (reaction_seen_overrides.isEmpty()) return items
+        val now = android.os.SystemClock.elapsedRealtime()
+        reaction_seen_overrides.entries.removeIf { now - it.value > REACTION_SEEN_OVERRIDE_MS }
+        if (reaction_seen_overrides.isEmpty()) return items
+        return items.map { item ->
+            if (item.has_unseen_reaction && reaction_seen_keys(item).any { reaction_seen_overrides.containsKey(it) }) {
+                without_unseen_reaction(item)
+            } else {
+                item
+            }
+        }
+    }
+
+    private fun mark_reactions_seen(item: InboxItem) {
+        val token = item.thread_token?.takeIf { it.isNotBlank() }
+        val matches: (InboxItem) -> Boolean = { other ->
+            other.id == item.id || (token != null && other.thread_token == token)
+        }
+        val is_flagged: (InboxItem) -> Boolean = { other -> other.has_unseen_reaction && matches(other) }
+        if (!item.has_unseen_reaction && _inbox_state.value.items.none(is_flagged)) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val keys = reaction_seen_keys(item)
+        val already_sent = keys.any { key ->
+            reaction_seen_overrides[key]?.let { now - it <= REACTION_SEEN_OVERRIDE_MS } == true
+        }
+        keys.forEach { reaction_seen_overrides[it] = now }
+        val clear: (InboxItem) -> InboxItem = { other ->
+            if (is_flagged(other)) without_unseen_reaction(other) else other
+        }
+        _inbox_state.update { state ->
+            if (state.items.any(is_flagged)) state.copy(items = state.items.map(clear)) else state
+        }
+        _thread_state.update { thread ->
+            val current = thread.item
+            if (current != null && is_flagged(current)) thread.copy(item = clear(current)) else thread
+        }
+        folder_cache.keys.toList().forEach { key ->
+            val cached = folder_cache[key] ?: return@forEach
+            if (cached.items.any(is_flagged)) {
+                folder_cache[key] = cached.copy(items = cached.items.map(clear))
+            }
+        }
+        if (already_sent) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                org.astermail.android.notifications.MailPollingWorker
+                    .clear_reaction_notifications(context, token, listOf(item.id))
+            }
+            repository.mark_reactions_seen(token, item.id)
         }
     }
 
@@ -921,7 +1053,126 @@ class MailViewModel @Inject constructor(
     }
 
     private fun apply_demo_overlay(items: List<InboxItem>, folder: String): List<InboxItem> {
-        return items.filter { it.id != DEMO_PHISH_ITEM_ID }
+        return apply_pending_actions(
+            folder,
+            items.filter { it.id != DEMO_PHISH_ITEM_ID },
+            repository.pending_actions_for_current_account(),
+        )
+    }
+
+    private fun observe_pending_actions() {
+        val actions_flow = repository.pending_actions ?: return
+        viewModelScope.launch {
+            var had_pending = false
+            actions_flow
+                .map { all ->
+                    val account = repository.current_account_id()
+                    all.filter { it.account_id == account }
+                }
+                .distinctUntilChanged()
+                .collect { actions ->
+                    if (actions.isNotEmpty()) {
+                        _inbox_state.update { state ->
+                            val patched = apply_pending_actions(state.current_folder, state.items, actions)
+                            if (patched == state.items) state else state.copy(items = patched)
+                        }
+                    }
+                    val drained = had_pending && actions.isEmpty()
+                    had_pending = actions.isNotEmpty()
+                    if (drained && foreground_check()) {
+                        folder_cache_time.clear()
+                        load_stats(force = true)
+                        val state = _inbox_state.value
+                        if (!state.is_loading && !state.is_refreshing) silent_revalidate(state.current_folder)
+                    }
+                }
+        }
+        val online_flow = repository.network_online ?: return
+        viewModelScope.launch {
+            online_flow
+                .drop(1)
+                .distinctUntilChanged()
+                .filter { it }
+                .collect {
+                    retry_offline_thread()
+                    runCatching { repository.drain_pending_actions_now() }
+                }
+        }
+    }
+
+    private var offline_retry_item_id: String? = null
+
+    private var offline_prefetch_job: kotlinx.coroutines.Job? = null
+
+    private val offline_warmed_at = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private fun retry_offline_thread() {
+        val item_id = offline_retry_item_id ?: return
+        offline_retry_item_id = null
+        val state = _thread_state.value
+        if (state.item != null || state.error == null) return
+        load_thread(item_id)
+    }
+
+    private fun schedule_offline_prefetch(items: List<InboxItem>) {
+        if (offline_prefetch_job?.isActive == true) return
+        val snapshot = items.toList()
+        val gen = account_generation
+        offline_prefetch_job = viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(OFFLINE_PREFETCH_DELAY_MS)
+            if (gen != account_generation) return@launch
+            runCatching { repository.prefetch_threads_for_offline(snapshot) }
+            if (gen != account_generation) return@launch
+            warm_folders_for_offline(gen)
+        }
+    }
+
+    private suspend fun warm_folders_for_offline(gen: Int) {
+        val now = System.currentTimeMillis()
+        for (folder in OFFLINE_WARM_FOLDERS) {
+            if (gen != account_generation) return
+            if (org.astermail.android.api.network.low_network_state.extend_timeouts()) return
+            if (!repository.is_network_available()) return
+            if (_inbox_state.value.is_loading) return
+            val last_warm = maxOf(folder_cache_time[folder] ?: 0L, offline_warmed_at[folder] ?: 0L)
+            if (now - last_warm < OFFLINE_WARM_FOLDER_FRESH_MS) continue
+            if (_inbox_state.value.current_folder == folder) continue
+            val page = try {
+                kotlinx.coroutines.withTimeoutOrNull(OFFLINE_WARM_FOLDER_TIMEOUT_MS) {
+                    fetch_for_folder(folder).getOrNull()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            } ?: return
+            val items = page.items.filter { folder_matches(folder, it) }
+            val persisted = kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
+                if (gen != account_generation) return@withContext null
+                if (_inbox_state.value.current_folder == folder) return@withContext false
+                offline_warmed_at[folder] = System.currentTimeMillis()
+                if (items.isEmpty()) return@withContext false
+                persist_folder_rows(folder, items)
+                true
+            } ?: return
+            if (!persisted) continue
+            if (folder != "drafts" && gen == account_generation) {
+                runCatching { repository.prefetch_threads_for_offline(items, OFFLINE_WARM_THREAD_LIMIT) }
+            }
+        }
+    }
+
+    private suspend fun offline_message_from_seed(seed: InboxItem): ThreadMessageDecrypted? {
+        val message = try {
+            single_message_from_item(seed)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            return null
+        }
+        if (message.is_undecryptable || message.is_body_pending) return null
+        if (message.body_text.isBlank() && message.body_html.isNullOrBlank()) return null
+        return message
     }
 
     private fun handle_demo_in(item_ids: List<String>): List<String> {
@@ -986,8 +1237,18 @@ class MailViewModel @Inject constructor(
         load_more_failures = 0
         load_more_retry_at = 0L
         val current = _inbox_state.value
-        if (current.current_folder != folder && folder_cache_time.containsKey(current.current_folder)) {
+        val current_filtered = !read_filter_allows_cache_write(current.read_filter)
+        if (current_filtered && current.current_folder == folder) {
+            reload_filtered_list(folder, current, force)
+            return
+        }
+        if (!current_filtered && current.current_folder != folder && folder_cache_time.containsKey(current.current_folder)) {
             folder_cache[current.current_folder] = current
+        }
+        if (current_filtered) {
+            load_more_job?.cancel()
+            load_all_remaining_job?.cancel()
+            filtered_list_time = 0L
         }
         if (!force && current.items.isNotEmpty() && current.current_folder == folder) return
         if (force && current.items.isNotEmpty() && current.current_folder == folder && !folder_cache.containsKey(folder)) {
@@ -1000,8 +1261,10 @@ class MailViewModel @Inject constructor(
             val warm = cached.copy(
                 items = apply_demo_overlay(
                     apply_tag_overrides(
-                        apply_pin_overrides(
-                            apply_star_overrides(apply_read_overrides(strip_removed(cached.items, folder))),
+                        apply_category_overrides(
+                            apply_pin_overrides(
+                                apply_star_overrides(apply_read_and_reaction_overrides(strip_removed(cached.items, folder))),
+                            ),
                         ),
                     ),
                     folder,
@@ -1014,6 +1277,7 @@ class MailViewModel @Inject constructor(
                 current_folder = folder,
                 stats = current.stats ?: cached.stats,
                 cache_pending = false,
+                read_filter = ListReadFilter.all,
             )
             _inbox_state.value = warm
             val age = System.currentTimeMillis() - (folder_cache_time[folder] ?: 0L)
@@ -1024,6 +1288,8 @@ class MailViewModel @Inject constructor(
         }
         inbox_load_job?.cancel()
         silent_revalidate_job?.cancel()
+        offline_prefetch_job?.cancel()
+        offline_prefetch_job = null
         val probed = disk_probed.contains(folder)
         val seeded = strip_removed(
             disk_rows[folder].orEmpty().filter { folder_matches(folder, it) },
@@ -1038,7 +1304,7 @@ class MailViewModel @Inject constructor(
                 emptyList()
             } else {
                 apply_demo_overlay(
-                    apply_tag_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(seeded)))),
+                    apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_and_reaction_overrides(seeded))))),
                     folder,
                 )
             },
@@ -1062,7 +1328,11 @@ class MailViewModel @Inject constructor(
                 } else {
                     emptyList()
                 }
-                if (persisted.size >= WARM_CACHE_MIN_ITEMS && _inbox_state.value.current_folder == folder) {
+                if (persisted.size >= WARM_CACHE_MIN_ITEMS &&
+                    _inbox_state.value.current_folder == folder &&
+                    load_gen == inbox_load_generation &&
+                    read_filter_allows_cache_write(_inbox_state.value.read_filter)
+                ) {
                     run {
                         val items = strip_removed(
                             persisted.map { it.to_inbox_item() }.filter { folder_matches(folder, it) },
@@ -1072,7 +1342,7 @@ class MailViewModel @Inject constructor(
                             val warmed_at = System.currentTimeMillis()
                             items.forEach { item_last_confirmed.putIfAbsent(it.id, warmed_at) }
                             _inbox_state.value = _inbox_state.value.copy(
-                                items = apply_demo_overlay(apply_tag_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(items)))), folder),
+                                items = apply_demo_overlay(apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_and_reaction_overrides(items))))), folder),
                                 initial = false,
                                 cache_pending = false,
                             )
@@ -1101,6 +1371,8 @@ class MailViewModel @Inject constructor(
                 }
             }
             if (_inbox_state.value.current_folder != folder) return@launch
+            if (load_gen != inbox_load_generation) return@launch
+            if (!read_filter_allows_cache_write(_inbox_state.value.read_filter)) return@launch
             if (is_cancellation(result.exceptionOrNull())) return@launch
             result.fold(
                 onSuccess = { page ->
@@ -1113,7 +1385,7 @@ class MailViewModel @Inject constructor(
                     val prior = _inbox_state.value
                     val merge = merge_with_previous(page, previous_for_merge(prior.items), folder)
                     val merged_items = apply_demo_overlay(
-                        apply_tag_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(merge.items)))),
+                        apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_and_reaction_overrides(merge.items))))),
                         folder,
                     )
                     _inbox_state.value = prior.copy(
@@ -1135,11 +1407,12 @@ class MailViewModel @Inject constructor(
                 },
                 onFailure = { t ->
                     val keep_items = _inbox_state.value.items.isNotEmpty()
+                    val known_empty = is_offline_failure(t) && folder_known_empty(folder, _inbox_state.value.stats)
                     _inbox_state.value = _inbox_state.value.copy(
                         is_loading = false,
                         initial = false,
                         cache_pending = false,
-                        error = if (keep_items) null else friendly_load_error(t),
+                        error = if (keep_items || known_empty) null else friendly_load_error(t),
                     )
                 },
             )
@@ -1159,6 +1432,50 @@ class MailViewModel @Inject constructor(
                 .lifecycle.currentState
                 .isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
         }.getOrDefault(true)
+    }
+
+    @Volatile private var resume_stale = false
+
+    fun refresh_on_resume(folder: String) {
+        val current = _inbox_state.value
+        val loaded_at = list_loaded_time(folder)
+        val age = if (loaded_at == null) Long.MAX_VALUE else System.currentTimeMillis() - loaded_at
+        val fresh = !resume_stale &&
+            current.current_folder == folder &&
+            current.items.isNotEmpty() &&
+            current.error == null &&
+            age in 0..RESUME_FRESH_MS
+        resume_stale = false
+        load_stats(force = true)
+        if (fresh) return
+        load_inbox(folder, force = true)
+        retry_resume_revalidate(folder)
+    }
+
+    fun refresh_after_background() {
+        load_stats(force = true)
+        val s = _inbox_state.value
+        if (!s.initial && !s.is_loading && !s.is_loading_more && !s.is_refreshing) {
+            silent_revalidate(s.current_folder)
+            retry_resume_revalidate(s.current_folder)
+        }
+        val thread = _thread_state.value
+        if (thread.item != null && !thread.is_loading) refresh_current_thread()
+    }
+
+    private var resume_retry_job: Job? = null
+
+    private fun retry_resume_revalidate(folder: String) {
+        val started = System.currentTimeMillis()
+        resume_retry_job?.cancel()
+        resume_retry_job = viewModelScope.launch {
+            delay(RESUME_RETRY_MS)
+            if (!resume_retry_due(list_loaded_time(folder), started)) return@launch
+            if (silent_revalidate_job?.isActive == true || !foreground_check()) return@launch
+            val s = _inbox_state.value
+            if (s.current_folder != folder || s.is_loading || s.is_loading_more || s.is_refreshing) return@launch
+            silent_revalidate(folder)
+        }
     }
 
     fun foreground_fallback_tick() {
@@ -1187,21 +1504,23 @@ class MailViewModel @Inject constructor(
         val gen = account_generation
         val load_gen = inbox_load_generation
         val refresh_gen = refresh_generation
+        val read_filter = current_read_filter(folder)
         silent_revalidate_job = viewModelScope.launch {
             val result = runCatching {
                 kotlinx.coroutines.withTimeout(INBOX_FETCH_BACKSTOP_MS) {
-                    fetch_for_folder(folder).getOrThrow()
+                    fetch_for_folder(folder, is_read = list_read_filter_query(read_filter)).getOrThrow()
                 }
             }
             if (account_generation != gen) return@launch
             if (inbox_load_generation != load_gen || refresh_generation != refresh_gen) return@launch
             if (_inbox_state.value.current_folder != folder) return@launch
+            if (_inbox_state.value.read_filter != read_filter) return@launch
             if (_inbox_state.value.is_refreshing) return@launch
             result.onSuccess { page ->
                 val prior = _inbox_state.value
                 val merge = merge_with_previous(page, previous_for_merge(prior.items), folder)
                 val merged_items = apply_demo_overlay(
-                    apply_tag_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(merge.items)))),
+                    apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_and_reaction_overrides(merge.items))))),
                     folder,
                 )
                 _inbox_state.value = prior.copy(
@@ -1215,18 +1534,165 @@ class MailViewModel @Inject constructor(
                     next_cursor = if (merge.carried_deeper && prior.next_cursor != null) prior.next_cursor else page.next_cursor,
                     total = page.total ?: prior.total,
                 )
-                folder_cache[folder] = _inbox_state.value
-                folder_cache_time[folder] = System.currentTimeMillis()
                 search_index_manager.on_items_loaded(apply_read_overrides(page.items))
-                if (folder == "inbox" && list_order == null) search_index_manager.mark_inbox_synced()
-                reconcile_cache_window(folder, page)
+                if (read_filter_allows_cache_write(read_filter)) {
+                    folder_cache[folder] = _inbox_state.value
+                    folder_cache_time[folder] = System.currentTimeMillis()
+                    if (folder == "inbox" && list_order == null) search_index_manager.mark_inbox_synced()
+                    reconcile_cache_window(folder, page)
+                } else {
+                    filtered_list_time = System.currentTimeMillis()
+                }
                 search_index_manager.ensure_index_built()
+            }
+        }
+    }
+
+    private fun current_read_filter(folder: String): ListReadFilter {
+        val state = _inbox_state.value
+        return if (state.current_folder == folder) state.read_filter else ListReadFilter.all
+    }
+
+    private fun list_loaded_time(folder: String): Long? =
+        if (read_filter_allows_cache_write(current_read_filter(folder))) {
+            folder_cache_time[folder]
+        } else {
+            filtered_list_time.takeIf { it > 0L }
+        }
+
+    private fun cancel_list_jobs() {
+        inbox_load_job?.cancel()
+        silent_revalidate_job?.cancel()
+        load_more_job?.cancel()
+        refresh_job?.cancel()
+        load_all_remaining_job?.cancel()
+        resume_retry_job?.cancel()
+        inbox_load_generation++
+        load_more_generation++
+        refresh_generation++
+        load_more_failures = 0
+        load_more_retry_at = 0L
+    }
+
+    fun set_read_filter(filter: ListReadFilter) {
+        val current = _inbox_state.value
+        val folder = current.current_folder
+        val wanted = effective_read_filter(folder, filter)
+        if (current.read_filter == wanted) return
+        cancel_list_jobs()
+        filtered_list_time = 0L
+        replace_on_revalidate = false
+        val filtered = !read_filter_allows_cache_write(wanted)
+        _inbox_state.value = InboxUiState(
+            is_loading = filtered,
+            initial = true,
+            current_folder = folder,
+            stats = current.stats,
+            stats_loaded_at = current.stats_loaded_at,
+            read_filter = wanted,
+        )
+        if (filtered) {
+            load_filtered_first_page(folder, wanted)
+        } else {
+            load_inbox(folder, force = true)
+        }
+    }
+
+    fun drop_read_filter() {
+        val current = _inbox_state.value
+        if (read_filter_allows_cache_write(current.read_filter)) return
+        cancel_list_jobs()
+        filtered_list_time = 0L
+        _inbox_state.value = InboxUiState(
+            current_folder = current.current_folder,
+            stats = current.stats,
+            stats_loaded_at = current.stats_loaded_at,
+        )
+    }
+
+    private fun reload_filtered_list(folder: String, current: InboxUiState, force: Boolean) {
+        if (current.items.isNotEmpty()) {
+            if (force) silent_revalidate(folder)
+            return
+        }
+        if (current.is_loading && inbox_load_job?.isActive == true) return
+        if (!force && !current.initial && current.error == null) return
+        inbox_load_job?.cancel()
+        silent_revalidate_job?.cancel()
+        _inbox_state.value = current.copy(is_loading = true, error = null, cache_pending = false)
+        load_filtered_first_page(folder, current.read_filter)
+    }
+
+    private fun load_filtered_first_page(folder: String, read_filter: ListReadFilter) {
+        val gen = account_generation
+        val load_gen = ++inbox_load_generation
+        val is_read = list_read_filter_query(read_filter)
+        inbox_load_job = viewModelScope.launch {
+            var result = runCatching {
+                kotlinx.coroutines.withTimeout(INBOX_FETCH_BACKSTOP_MS) {
+                    fetch_for_folder(folder, is_read = is_read).getOrThrow()
+                }
+            }
+            if (result.isFailure &&
+                load_gen == inbox_load_generation &&
+                !is_offline_failure(result.exceptionOrNull()) &&
+                !is_cancellation(result.exceptionOrNull()) &&
+                !is_permanent_load_failure(result.exceptionOrNull()) &&
+                result.exceptionOrNull() !is org.astermail.android.api.ApiError.UnauthorizedError
+            ) {
+                kotlinx.coroutines.delay(500L)
+                result = runCatching {
+                    kotlinx.coroutines.withTimeout(INBOX_FETCH_BACKSTOP_MS) {
+                        fetch_for_folder(folder, is_read = is_read).getOrThrow()
+                    }
+                }
+            }
+            if (account_generation != gen || load_gen != inbox_load_generation) return@launch
+            val prior = _inbox_state.value
+            if (prior.current_folder != folder || prior.read_filter != read_filter) return@launch
+            if (is_cancellation(result.exceptionOrNull())) return@launch
+            result.fold(
+                onSuccess = { page ->
+                    val merge = merge_with_previous(page, emptyList(), folder)
+                    _inbox_state.value = prior.copy(
+                        items = apply_demo_overlay(
+                            apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(merge.items))))),
+                            folder,
+                        ),
+                        is_loading = false,
+                        initial = false,
+                        cache_pending = false,
+                        error = null,
+                        list_loaded_at = override_clock_ms(),
+                        has_more = page.has_more,
+                        next_cursor = page.next_cursor,
+                        total = page.total ?: 0,
+                    )
+                    filtered_list_time = System.currentTimeMillis()
+                    search_index_manager.on_items_loaded(apply_read_overrides(page.items))
+                },
+                onFailure = { t ->
+                    _inbox_state.value = prior.copy(
+                        is_loading = false,
+                        initial = false,
+                        cache_pending = false,
+                        error = if (prior.items.isNotEmpty()) null else friendly_load_error(t),
+                    )
+                },
+            )
+        }
+        inbox_load_job?.invokeOnCompletion {
+            if (load_gen != inbox_load_generation) return@invokeOnCompletion
+            val state = _inbox_state.value
+            if (state.current_folder == folder && (state.is_loading || state.initial || state.cache_pending)) {
+                _inbox_state.value = state.copy(is_loading = false, initial = false, cache_pending = false)
             }
         }
     }
 
     private suspend fun reconcile_cache_window(folder: String, page: InboxPage) {
         if (folder != "inbox" || page.items.isEmpty()) return
+        schedule_offline_prefetch(page.items)
         if (list_order != null) return
         val min_timestamp = page.items.minOf { it.timestamp }
         val returned_ids = page.items.mapTo(HashSet()) { it.id }
@@ -1250,8 +1716,16 @@ class MailViewModel @Inject constructor(
             load_more_failures = 0
             load_more_retry_at = 0L
         }
-        var cursor = state.next_cursor ?: return
         val started_folder = state.current_folder
+        val started_filter = state.read_filter
+        val is_read = list_read_filter_query(started_filter)
+        var cursor = state.next_cursor?.let {
+            if (folder_uses_offset_cursor(started_folder)) {
+                rebase_offset_cursor(it, read_filter_offset_base(state.items.map { item -> item.is_read }, started_filter))
+            } else {
+                it
+            }
+        } ?: return
         _inbox_state.update { it.copy(is_loading_more = true) }
         val load_more_gen = ++load_more_generation
         load_more_job = viewModelScope.launch {
@@ -1260,7 +1734,7 @@ class MailViewModel @Inject constructor(
                 var fetch_cancelled = false
                 var auth_failed = false
                 val page = try {
-                    val result = fetch_for_folder(started_folder, cursor)
+                    val result = fetch_for_folder(started_folder, cursor, is_read = is_read)
                     if (result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
                         fetch_cancelled = true
                         null
@@ -1280,7 +1754,7 @@ class MailViewModel @Inject constructor(
                     _inbox_state.update { it.copy(is_loading_more = false) }
                     return@launch
                 }
-                if (_inbox_state.value.current_folder != started_folder) {
+                if (_inbox_state.value.current_folder != started_folder || _inbox_state.value.read_filter != started_filter) {
                     _inbox_state.value = _inbox_state.value.copy(is_loading_more = false)
                     return@launch
                 }
@@ -1315,8 +1789,10 @@ class MailViewModel @Inject constructor(
                     continue
                 }
                 val combined = apply_tag_overrides(
-                    apply_pin_overrides(
-                        apply_star_overrides(apply_read_overrides(existing + new_items)),
+                    apply_category_overrides(
+                        apply_pin_overrides(
+                            apply_star_overrides(apply_read_and_reaction_overrides(existing + new_items)),
+                        ),
                     ),
                 )
                 val effective_has_more = page.has_more && cursor_advanced
@@ -1326,8 +1802,10 @@ class MailViewModel @Inject constructor(
                     has_more = effective_has_more,
                     next_cursor = if (effective_has_more) page.next_cursor else null,
                 )
-                folder_cache[started_folder] = _inbox_state.value
-                folder_cache_time[started_folder] = System.currentTimeMillis()
+                if (read_filter_allows_cache_write(started_filter)) {
+                    folder_cache[started_folder] = _inbox_state.value
+                    folder_cache_time[started_folder] = System.currentTimeMillis()
+                }
                 search_index_manager.on_items_loaded(apply_read_overrides(page.items))
                 return@launch
             }
@@ -1621,7 +2099,9 @@ class MailViewModel @Inject constructor(
                 ThreadUiState(is_loading = true)
             }
         }
+        seed?.let { mark_reactions_seen(it) }
         thread_load_job?.cancel()
+        if (offline_retry_item_id != item_id) offline_retry_item_id = null
         thread_open_started_at = android.os.SystemClock.elapsedRealtime()
         thread_open_painted.clear()
         val thread_gen = ++thread_load_generation
@@ -1633,21 +2113,22 @@ class MailViewModel @Inject constructor(
             }
             val early_thread = if (seed_token != null) {
                 async(Dispatchers.IO) {
-                    withTimeoutOrNull(15_000) { repository.fetch_thread(seed_token) }
+                    withTimeoutOrNull(thread_open_timeout_ms()) { repository.fetch_thread(seed_token) }
                 }
             } else {
                 null
             }
             try {
-            val item_result = withTimeoutOrNull(15_000) {
+            val item_result = withTimeoutOrNull(thread_open_timeout_ms()) {
                 repository.fetch_single_message(item_id)
-            } ?: Result.failure(Exception(context.getString(R.string.something_went_wrong)))
+            } ?: Result.failure(java.net.SocketTimeoutException(context.getString(R.string.something_went_wrong)))
             if (thread_gen != thread_load_generation) {
                 early_thread?.cancel()
                 return@launch
             }
             val item = item_result.getOrNull()?.let { apply_tag_override(it) }
             if (item != null) resume_failed_open(item_id)
+            if (item != null) mark_reactions_seen(item)
             val thread_token = item?.thread_token
             if (thread_token != null) {
                 val fallback = listOf(message_from_item_safe(item))
@@ -1657,7 +2138,7 @@ class MailViewModel @Inject constructor(
                     early_thread?.cancel()
                     null
                 }
-                val result = reusable ?: withTimeoutOrNull(15_000) {
+                val result = reusable ?: withTimeoutOrNull(thread_open_timeout_ms()) {
                     repository.fetch_thread(thread_token)
                 } ?: Result.failure(Exception(context.getString(R.string.something_went_wrong)))
                 if (thread_gen != thread_load_generation) return@launch
@@ -1692,6 +2173,12 @@ class MailViewModel @Inject constructor(
                         }
                         load_attachments_for_thread(resolved)
                         load_reactions(resolved)
+                        if (resolved.any { message -> message.raw_item.reactions.orEmpty().any { it.is_unseen } }) {
+                            runCatching {
+                                org.astermail.android.notifications.MailPollingWorker
+                                    .clear_reaction_notifications(context, thread_token, resolved.map { it.id })
+                            }
+                        }
                     },
                     onFailure = { t ->
                         val kept = previous.ifEmpty { fallback }
@@ -1722,6 +2209,17 @@ class MailViewModel @Inject constructor(
                 val keep = _thread_state.value
                 val kept = keep.item?.id == item_id && keep.messages.any { !it.is_body_pending }
                 val missing_on_server = item_result.exceptionOrNull() is org.astermail.android.api.ApiError.NotFoundError
+                val offline_failure = !kept && !missing_on_server &&
+                    is_transient_failure(item_result.exceptionOrNull())
+                val offline_fallback = if (offline_failure && seed != null) offline_message_from_seed(seed) else null
+                if (thread_gen != thread_load_generation) return@launch
+                if (offline_fallback != null && seed != null) {
+                    offline_retry_item_id = null
+                    _thread_state.value = apply_thread_read_overrides(
+                        ThreadUiState(messages = listOf(offline_fallback), item = seed),
+                    )
+                    return@launch
+                }
                 if (!kept && item_result.exceptionOrNull()?.let { is_cancellation(it) } != true) {
                     undo_failed_open(item_id)
                 }
@@ -1730,6 +2228,9 @@ class MailViewModel @Inject constructor(
                     keep.copy(is_loading = false, error = null)
                 } else if (missing_on_server) {
                     ThreadUiState(error = context.getString(R.string.message_replaced_or_deleted))
+                } else if (offline_failure) {
+                    offline_retry_item_id = item_id
+                    ThreadUiState(error = context.getString(open_failure_message(item_result.exceptionOrNull())))
                 } else {
                     ThreadUiState(
                         error = item_result.exceptionOrNull()
@@ -2515,6 +3016,76 @@ class MailViewModel @Inject constructor(
         }
     }
 
+    private fun apply_category_overrides(items: List<InboxItem>): List<InboxItem> {
+        if (category_overrides.isEmpty()) return items
+        val now = override_clock_ms()
+        return items.map { item ->
+            val (category, at) = category_overrides[item.id] ?: return@map item
+            if (now - at >= OVERRIDE_TTL_MS) {
+                category_overrides.remove(item.id)
+                return@map item
+            }
+            if (item.category == category) item else with_category(item, category)
+        }
+    }
+
+    fun move_to_category(item_id: String, category: String) {
+        if (item_id == DEMO_PHISH_ITEM_ID) return
+        val current = _inbox_state.value.items.find { it.id == item_id }
+            ?: _thread_state.value.item?.takeIf { it.id == item_id }
+            ?: folder_cache.values.firstNotNullOfOrNull { cached ->
+                cached.items.find { it.id == item_id }
+            }
+            ?: return
+        if (current.category == category) return
+        val previous_override = category_overrides[item_id]
+        val replace_item: ((InboxItem) -> InboxItem) -> Unit = { transform ->
+            _inbox_state.update { state ->
+                state.copy(items = state.items.map { if (it.id == item_id) transform(it) else it })
+            }
+            _thread_state.update { thread ->
+                val item = thread.item
+                if (item?.id == item_id) thread.copy(item = transform(item)) else thread
+            }
+            folder_cache.keys.toList().forEach { key ->
+                val cached = folder_cache[key] ?: return@forEach
+                if (cached.items.any { it.id == item_id }) {
+                    folder_cache[key] = cached.copy(items = cached.items.map { if (it.id == item_id) transform(it) else it })
+                }
+            }
+        }
+        category_overrides[item_id] = category to override_clock_ms()
+        replace_item { with_category(it, category) }
+        viewModelScope.launch {
+            repository.set_category(item_id, category, current.raw_item).fold(
+                onSuccess = { written ->
+                    replace_item { with_category(it, category, written) }
+                    search_index_manager.on_items_loaded(listOf(with_category(current, category, written)))
+                    emit_toast(context.getString(R.string.moved_to_category))
+                },
+                onFailure = { failure ->
+                    if (previous_override != null) {
+                        category_overrides[item_id] = previous_override
+                    } else {
+                        category_overrides.remove(item_id)
+                    }
+                    replace_item { restore_category(it, current) }
+                    emit_toast(
+                        if (failure is MetadataUndecryptableException) {
+                            context.getString(R.string.metadata_undecryptable_change)
+                        } else {
+                            org.astermail.android.localized_api_error(
+                                context,
+                                failure,
+                                context.getString(R.string.something_went_wrong),
+                            )
+                        },
+                    )
+                },
+            )
+        }
+    }
+
     fun apply_label(item_id: String, label_token: String, display_name: String) {
         if (item_id == DEMO_PHISH_ITEM_ID) return
         val prev_inbox_labels = _inbox_state.value.items.find { it.id == item_id }?.labels
@@ -2841,9 +3412,7 @@ class MailViewModel @Inject constructor(
         val ids = item_ids.filter { it != DEMO_PHISH_ITEM_ID }
         if (ids.isEmpty()) return
         viewModelScope.launch {
-            val failed_ids = run_bulk_action(ids) { id ->
-                repository.unsnooze(id).isSuccess
-            }
+            val failed_ids = repository.unsnooze_bulk(ids).getOrElse { ids.toSet() }
             val ok_ids = ids.filter { it !in failed_ids }.toSet()
             if (ok_ids.isNotEmpty()) {
                 _inbox_state.value = _inbox_state.value.copy(
@@ -2859,6 +3428,54 @@ class MailViewModel @Inject constructor(
                 emit_toast(context.resources.getQuantityString(R.plurals.unsnoozed_count, ok_ids.size, ok_ids.size))
             }
         }
+    }
+
+    private fun patch_thread_item_tag(ids: Set<String>, tag_token: String, add: Boolean): InboxItem? {
+        val thread = _thread_state.value
+        val item = thread.item?.takeIf { it.id in ids } ?: return null
+        val new_tokens = if (add) (item.tag_tokens + tag_token).distinct() else item.tag_tokens - tag_token
+        _thread_state.value = thread.copy(
+            item = item.copy(
+                tag_tokens = new_tokens,
+                raw_item = item.raw_item.copy(tag_tokens = new_tokens),
+            ),
+        )
+        return item
+    }
+
+    private fun restore_thread_item_tags(previous: InboxItem?, failed_ids: Set<String>) {
+        if (previous == null || previous.id !in failed_ids) return
+        val thread = _thread_state.value
+        val current = thread.item?.takeIf { it.id == previous.id } ?: return
+        _thread_state.value = thread.copy(
+            item = current.copy(
+                tag_tokens = previous.tag_tokens,
+                raw_item = current.raw_item.copy(tag_tokens = previous.raw_item.tag_tokens),
+            ),
+        )
+    }
+
+    private fun conversation_ids_for(item_id: String): List<String> {
+        val thread = _thread_state.value
+        val loaded = _inbox_state.value.items
+        val own = (thread.item?.takeIf { it.id == item_id } ?: loaded.find { it.id == item_id })
+            ?: return listOf(item_id)
+        val message_ids = if (thread.item?.id == item_id) thread.messages.map { it.id } else emptyList()
+        return org.astermail.android.labels.conversation_item_ids(
+            own = own.as_conversation_member(),
+            loaded = loaded.map { it.as_conversation_member() },
+            message_ids = message_ids,
+        )
+    }
+
+    fun apply_tag_to_conversation(item_id: String, tag_token: String, display_name: String) {
+        val ids = conversation_ids_for(item_id)
+        if (ids.size <= 1) apply_tag(item_id, tag_token, display_name) else apply_tag_bulk(ids, tag_token, display_name)
+    }
+
+    fun remove_tag_from_conversation(item_id: String, tag_token: String, display_name: String) {
+        val ids = conversation_ids_for(item_id)
+        if (ids.size <= 1) remove_tag(item_id, tag_token, display_name) else remove_tag_bulk(ids, tag_token, display_name)
     }
 
     fun apply_tag_bulk(item_ids: List<String>, tag_token: String, display_name: String) {
@@ -2877,6 +3494,7 @@ class MailViewModel @Inject constructor(
                 } else it
             },
         )
+        val prev_thread_item = patch_thread_item_tag(id_set, tag_token, add = true)
         patch_cached_tag_tokens(id_set, tag_token)
         id_set.forEach { set_tag_override(it, tag_token, true) }
         viewModelScope.launch {
@@ -2887,6 +3505,7 @@ class MailViewModel @Inject constructor(
                 emit_toast(context.getString(R.string.added_to_label, display_name))
             } else {
                 failed_ids.forEach { clear_tag_override(it, tag_token) }
+                restore_thread_item_tags(prev_thread_item, failed_ids)
                 patch_cached_tag_tokens(failed_ids.toSet(), tag_token, add = false)
                 _inbox_state.value = _inbox_state.value.copy(
                     items = _inbox_state.value.items.map {
@@ -2915,6 +3534,7 @@ class MailViewModel @Inject constructor(
                 } else it
             },
         )
+        val prev_thread_item = patch_thread_item_tag(id_set, tag_token, add = false)
         patch_cached_tag_tokens(id_set, tag_token, add = false)
         id_set.forEach { set_tag_override(it, tag_token, false) }
         viewModelScope.launch {
@@ -2925,6 +3545,7 @@ class MailViewModel @Inject constructor(
                 emit_toast(context.getString(R.string.removed_from_label, display_name))
             } else {
                 failed_ids.forEach { clear_tag_override(it, tag_token) }
+                restore_thread_item_tags(prev_thread_item, failed_ids)
                 patch_cached_tag_tokens(failed_ids.toSet(), tag_token)
                 _inbox_state.value = _inbox_state.value.copy(
                     items = _inbox_state.value.items.map {
@@ -3036,19 +3657,21 @@ class MailViewModel @Inject constructor(
         pending_removed_ids.addAll(ids)
         protect_removed(ids)
         viewModelScope.launch {
+            var resync = false
             try {
-                val failed_ids = run_bulk_action(ids) { id ->
-                    repository.snooze(id, snoozed_until_iso).isSuccess
+                val outcome = repository.snooze_bulk(ids, snoozed_until_iso).getOrElse {
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    MailRepository.SnoozeBulkOutcome(failed_ids = id_set)
                 }
-                val ok_ids = ids.filter { it !in failed_ids }.toSet()
-                if (ok_ids.isNotEmpty()) {
+                val failed_set = outcome.failed_ids
+                if (failed_set.size < ids.size) {
                     invalidate_caches(listOf("inbox", "snoozed"))
                     load_stats(force = true)
                 }
-                if (failed_ids.isNotEmpty()) {
-                    val failed_set = failed_ids.toSet()
+                if (failed_set.isNotEmpty() || outcome.skipped > 0) {
                     undo_local_restore(removed_items.filter { it.id in failed_set })
                     undo_search_restore(search_removed.filter { it.id in failed_set })
+                    resync = outcome.skipped > 0
                     emit_toast(context.getString(R.string.couldnt_snooze))
                 } else {
                     emit_toast(context.getString(R.string.snoozed_until, label))
@@ -3060,6 +3683,10 @@ class MailViewModel @Inject constructor(
                 emit_toast(context.getString(R.string.couldnt_snooze))
             } finally {
                 pending_removed_ids.removeAll(id_set)
+            }
+            if (resync) {
+                clear_removal_protection(id_set)
+                refresh()
             }
         }
     }
@@ -3127,18 +3754,6 @@ class MailViewModel @Inject constructor(
         return prior
     }
 
-    private suspend fun run_bulk_action(
-        ids: List<String>,
-        action: suspend (String) -> Boolean,
-    ): Set<String> = kotlinx.coroutines.coroutineScope {
-        val failed = mutableSetOf<String>()
-        ids.chunked(BULK_ACTION_CONCURRENCY).forEach { chunk ->
-            val results = chunk.map { id -> async { id to runCatching { action(id) }.getOrDefault(false) } }.awaitAll()
-            results.forEach { (id, ok) -> if (!ok) failed.add(id) }
-        }
-        failed
-    }
-
     private fun count_label(n: Int, singular: String, plural: String): String {
         return if (n == 1) singular else "$n $plural"
     }
@@ -3193,7 +3808,7 @@ class MailViewModel @Inject constructor(
     private fun invalidate_caches_except_current(folders: List<String>) {
         val current = _inbox_state.value.current_folder
         invalidate_caches(folders.filter { it != current })
-        if (folder_cache_time.containsKey(current)) {
+        if (folder_cache_time.containsKey(current) && read_filter_allows_cache_write(_inbox_state.value.read_filter)) {
             folder_cache[current] = _inbox_state.value
         }
     }
@@ -3694,7 +4309,7 @@ class MailViewModel @Inject constructor(
         invalidate_caches(listOf("inbox", "archive", "label:$label_token"))
         viewModelScope.launch {
             try {
-                val removed = item_ids.all { repository.remove_label_from_item(it, label_token).isSuccess }
+                val removed = repository.remove_label_bulk(item_ids, label_token).isEmpty()
                 val restored = repository.unarchive(item_ids, raw_items).isSuccess
                 if (removed && restored) {
                     runCatching { search_index_manager.mark_unarchived(item_ids) }
@@ -3995,7 +4610,8 @@ class MailViewModel @Inject constructor(
                 if (repository.folder_supports_bulk_scope(folder)) {
                     repository.mark_all_read_scope(folder)
                 } else {
-                    val ids = current_read_ids(prior_reads.keys, sequence)
+                    val ids = scope_read_ids(folder, prior_reads.keys, sequence)
+                        ?: return@withLock Result.failure<org.astermail.android.api.mail.BulkScopeResponse>(IllegalStateException("alias listing failed"))
                     if (ids.isEmpty()) return@launch else repository.mark_read_bulk(ids)
                 }
             }
@@ -4030,7 +4646,8 @@ class MailViewModel @Inject constructor(
                 if (repository.folder_supports_bulk_scope(folder)) {
                     repository.mark_all_unread_scope(folder)
                 } else {
-                    val ids = current_read_ids(prior_reads.keys, sequence)
+                    val ids = scope_read_ids(folder, prior_reads.keys, sequence)
+                        ?: return@withLock Result.failure<org.astermail.android.api.mail.BulkScopeResponse>(IllegalStateException("alias listing failed"))
                     if (ids.isEmpty()) return@launch else repository.mark_unread_bulk(ids)
                 }
             }
@@ -4051,8 +4668,40 @@ class MailViewModel @Inject constructor(
         }
     }
 
+    private suspend fun scope_read_ids(
+        folder: String,
+        loaded: Set<String>,
+        sequence: Long,
+    ): List<String>? {
+        val live = current_read_ids(loaded, sequence)
+        if (!folder.startsWith("routing:")) return live
+        val routing_scope = parse_alias_routing_folder(folder)
+            ?: alias_routing_scope(folder.removePrefix("routing:"), alias_direction_all)
+        val collected = repository.collect_routing_ids(
+            routing_scope.routing_token,
+            alias_direction_query(routing_scope.direction),
+        ).getOrNull() ?: return null
+        return merge_scope_read_ids(live, loaded, collected.ids)
+    }
+
     fun folder_supports_scope_selection(folder: String): Boolean =
+        repository.folder_supports_bulk_scope(folder) || is_routing_scope_folder(folder)
+
+    fun folder_uses_server_scope(folder: String): Boolean =
         repository.folder_supports_bulk_scope(folder)
+
+    private fun is_routing_scope_folder(folder: String): Boolean =
+        folder.startsWith("routing:") && folder.length > "routing:".length
+
+    private suspend fun collect_folder_scope_ids(folder: String): Result<ScopeIds> {
+        if (!is_routing_scope_folder(folder)) return repository.collect_scope_ids(folder)
+        val routing_scope = parse_alias_routing_folder(folder)
+            ?: alias_routing_scope(folder.removePrefix("routing:"), alias_direction_all)
+        return repository.collect_routing_ids(
+            routing_scope.routing_token,
+            alias_direction_query(routing_scope.direction),
+        )
+    }
 
     fun action_supports_scope_selection(action: String): Boolean =
         repository.action_supports_bulk_scope(action)
@@ -4178,6 +4827,22 @@ class MailViewModel @Inject constructor(
         emit_toast(context.getString(R.string.applied_to_loaded_only, applied, total))
     }
 
+    fun collect_scope_selection_ids(folder: String, expected_total: Int, on_ready: (List<String>) -> Unit) {
+        viewModelScope.launch {
+            collect_folder_scope_ids(folder)
+                .onSuccess { result ->
+                    if (result.capped) {
+                        emit_toast(context.getString(R.string.scope_applied_to_first, result.ids.size, maxOf(expected_total, result.ids.size)))
+                    }
+                    on_ready(result.ids)
+                }
+                .onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    emit_toast(context.getString(R.string.scope_collect_failed))
+                }
+        }
+    }
+
     fun star_scope(folder: String, is_starred: Boolean) {
         val prior = _inbox_state.value
         val snapshot = prior.items
@@ -4195,9 +4860,10 @@ class MailViewModel @Inject constructor(
                     invalidate_caches(listOf(folder, "starred"))
                     load_stats(force = true)
                     refresh()
+                    val count = if (response.batch_id == QUEUED_BATCH_ID) snapshot.size else response.affected_count
                     emit_toast(
-                        if (is_starred) context.resources.getQuantityString(R.plurals.starred_count, response.affected_count, response.affected_count)
-                        else context.resources.getQuantityString(R.plurals.unstarred_count, response.affected_count, response.affected_count),
+                        if (is_starred) context.resources.getQuantityString(R.plurals.starred_count, count, count)
+                        else context.resources.getQuantityString(R.plurals.unstarred_count, count, count),
                     )
                 },
                 onFailure = {
@@ -4361,6 +5027,43 @@ class MailViewModel @Inject constructor(
         }
     }
 
+    private val search_folders_loading = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private val search_attachment_cache =
+        java.util.concurrent.ConcurrentHashMap<String, List<org.astermail.android.ui.search.SearchAttachment>>()
+
+    internal suspend fun search_attachment_types(
+        item_ids: List<String>,
+    ): Map<String, List<org.astermail.android.ui.search.SearchAttachment>> = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val missing = item_ids.filterNot { search_attachment_cache.containsKey(it) }
+        if (missing.isNotEmpty()) {
+            repository.fetch_attachment_metas_for_messages(missing).onSuccess { metas ->
+                missing.forEach { id ->
+                    search_attachment_cache[id] = metas[id].orEmpty().map {
+                        org.astermail.android.ui.search.SearchAttachment(it.filename, it.content_type)
+                    }
+                }
+            }
+        }
+        item_ids.mapNotNull { id -> search_attachment_cache[id]?.let { id to it } }.toMap()
+    }
+
+    fun load_search_folder(folder: String) {
+        val item_type = search_folder_item_type(folder) ?: return
+        if (!search_folders_loading.add(folder)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                repository.fetch_folder_for_search(folder).onSuccess { items ->
+                    _search_state.update { state ->
+                        state.copy(all_items = replace_search_folder_items(state.all_items, item_type, items))
+                    }
+                }
+            } finally {
+                search_folders_loading.remove(folder)
+            }
+        }
+    }
+
     fun build_search_index(force: Boolean = false) {
         val current = _search_state.value
         if (current.is_indexing) return
@@ -4371,14 +5074,20 @@ class MailViewModel @Inject constructor(
                 val cached = search_index_manager.get_cached_items()
                 if (cached.isNotEmpty() && !force) {
                     _search_state.value = SearchUiState(
-                        all_items = apply_read_overrides(cached.map { it.to_inbox_item() }),
+                        all_items = carry_search_folder_items(
+                            apply_read_overrides(cached.map { it.to_inbox_item() }),
+                            _search_state.value.all_items,
+                        ),
                         is_indexed = true,
                     )
                     search_index_manager.refresh_index_and_wait()
                     val refreshed = search_index_manager.get_cached_items()
                     if (refreshed.isNotEmpty()) {
                         _search_state.value = _search_state.value.copy(
-                            all_items = apply_read_overrides(refreshed.map { it.to_inbox_item() }),
+                            all_items = carry_search_folder_items(
+                                apply_read_overrides(refreshed.map { it.to_inbox_item() }),
+                                _search_state.value.all_items,
+                            ),
                         )
                     }
                 } else {
@@ -4387,7 +5096,7 @@ class MailViewModel @Inject constructor(
                         onSuccess = { items ->
                             search_index_manager.on_items_loaded(apply_read_overrides(items))
                             _search_state.value = SearchUiState(
-                                all_items = items,
+                                all_items = carry_search_folder_items(items, _search_state.value.all_items),
                                 is_indexed = true,
                             )
                             val with_attachments = search_index_manager.resolve_attachment_ids(
@@ -4402,10 +5111,9 @@ class MailViewModel @Inject constructor(
                             }
                         },
                         onFailure = { t ->
-                            val keep = _search_state.value.all_items
-                            _search_state.value = _search_state.value.copy(
-                                is_indexing = false,
-                                error = if (keep.isNotEmpty()) null else (org.astermail.android.localized_api_error(context, t, context.getString(R.string.something_went_wrong))),
+                            _search_state.value = search_state_after_index_failure(
+                                _search_state.value,
+                                org.astermail.android.localized_api_error(context, t, context.getString(R.string.something_went_wrong)),
                             )
                         },
                     )
@@ -4413,10 +5121,9 @@ class MailViewModel @Inject constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (t: Throwable) {
-                val keep = _search_state.value.all_items
-                _search_state.value = _search_state.value.copy(
-                    is_indexing = false,
-                    error = if (keep.isNotEmpty()) null else (org.astermail.android.localized_api_error(context, t, context.getString(R.string.something_went_wrong))),
+                _search_state.value = search_state_after_index_failure(
+                    _search_state.value,
+                    org.astermail.android.localized_api_error(context, t, context.getString(R.string.something_went_wrong)),
                 )
             }
         }
@@ -4530,6 +5237,7 @@ class MailViewModel @Inject constructor(
 
     fun refresh() {
         val folder = _inbox_state.value.current_folder
+        val read_filter = _inbox_state.value.read_filter
         if (_inbox_state.value.is_refreshing && refresh_job?.isActive == true) return
         val gen = account_generation
         load_more_failures = 0
@@ -4544,14 +5252,17 @@ class MailViewModel @Inject constructor(
         load_more_job?.cancel()
         refresh_job?.cancel()
         refresh_job = viewModelScope.launch {
+            kotlinx.coroutines.withTimeoutOrNull(PENDING_DRAIN_BEFORE_REFRESH_MS) {
+                runCatching { repository.drain_pending_actions_now() }
+            }
             val result = runCatching {
                 kotlinx.coroutines.withTimeout(PULL_REFRESH_BACKSTOP_MS) {
-                    fetch_for_folder(folder).getOrThrow()
+                    fetch_for_folder(folder, is_read = list_read_filter_query(read_filter)).getOrThrow()
                 }
             }
             if (account_generation != gen) return@launch
             if (refresh_gen != refresh_generation) return@launch
-            if (_inbox_state.value.current_folder != folder) {
+            if (_inbox_state.value.current_folder != folder || _inbox_state.value.read_filter != read_filter) {
                 _inbox_state.update { it.copy(is_refreshing = false) }
                 return@launch
             }
@@ -4560,7 +5271,7 @@ class MailViewModel @Inject constructor(
                     val prior = _inbox_state.value
                     val merge = merge_with_previous(page, previous_for_merge(prior.items), folder)
                     val merged_items = apply_demo_overlay(
-                        apply_tag_overrides(apply_pin_overrides(apply_star_overrides(apply_read_overrides(merge.items)))),
+                        apply_tag_overrides(apply_category_overrides(apply_pin_overrides(apply_star_overrides(apply_read_and_reaction_overrides(merge.items))))),
                         folder,
                     )
                     _inbox_state.value = prior.copy(
@@ -4575,8 +5286,12 @@ class MailViewModel @Inject constructor(
                         next_cursor = if (merge.carried_deeper && prior.next_cursor != null) prior.next_cursor else page.next_cursor,
                         total = page.total ?: prior.total,
                     )
-                    folder_cache[folder] = _inbox_state.value
-                    folder_cache_time[folder] = System.currentTimeMillis()
+                    if (read_filter_allows_cache_write(read_filter)) {
+                        folder_cache[folder] = _inbox_state.value
+                        folder_cache_time[folder] = System.currentTimeMillis()
+                    } else {
+                        filtered_list_time = System.currentTimeMillis()
+                    }
                     search_index_manager.on_items_loaded(apply_read_overrides(page.items))
                     search_index_manager.ensure_index_built()
                 },
@@ -4708,6 +5423,7 @@ class MailViewModel @Inject constructor(
 
     init {
         seed_inbox_attachment_flags()
+        observe_pending_actions()
         viewModelScope.launch {
             MailReadEvents.events.collect { apply_notification_read(it) }
         }
@@ -4726,6 +5442,8 @@ class MailViewModel @Inject constructor(
             repository.new_mail_events.collect {
                 if (foreground_check()) {
                     silent_revalidate(_inbox_state.value.current_folder)
+                } else {
+                    resume_stale = true
                 }
             }
         }
@@ -4839,8 +5557,9 @@ class MailViewModel @Inject constructor(
             session_id = session_id,
             on_id_assigned = on_id_assigned,
             attachments = attachments,
+            queue_offline = true,
         )
-        if (result.isSuccess) invalidate_caches(listOf("drafts"))
+        if (result.isSuccess && repository.is_network_available()) invalidate_caches(listOf("drafts"))
         return result
     }
 
@@ -4883,10 +5602,11 @@ class MailViewModel @Inject constructor(
                     thread_token = thread_token,
                     session_id = session_id,
                     attachments = attachments,
+                    queue_offline = true,
                 )
             }
             if (result.isSuccess) {
-                runCatching { invalidate_caches(listOf("drafts")) }
+                if (repository.is_network_available()) runCatching { invalidate_caches(listOf("drafts")) }
                 runCatching {
                     emit_toast(context.getString(R.string.email_saved_as_draft))
                 }
@@ -4949,6 +5669,7 @@ class MailViewModel @Inject constructor(
             spf_result = raw.spf_result,
             dkim_result = raw.dkim_result,
             dmarc_result = raw.dmarc_result,
+            sender_aligned = raw.sender_aligned,
             sender_verified = raw.sender_verified,
             sender_verified_domain = raw.sender_verified_domain,
             is_reaction = raw.is_reaction,
@@ -4995,6 +5716,12 @@ class MailViewModel @Inject constructor(
         else -> false
     }
 
+    private fun open_failure_message(t: Throwable?): Int = when {
+        !repository.is_network_available() -> R.string.message_unavailable_offline
+        t != null && is_timeout_failure(t) -> R.string.error_timeout
+        else -> R.string.error_no_connection
+    }
+
     private fun friendly_load_error(t: Throwable): String {
         val res = when {
             is_timeout_failure(t) -> R.string.error_timeout
@@ -5012,16 +5739,17 @@ class MailViewModel @Inject constructor(
         folder: String,
         cursor: String? = null,
         limit: Int = page_size,
+        is_read: Boolean? = null,
     ): Result<InboxPage> = when (folder) {
-        "inbox" -> repository.fetch_inbox(limit = limit, cursor = cursor, order = list_order)
-        "sent" -> repository.fetch_sent(limit = limit, cursor = cursor, order = list_order)
+        "inbox" -> repository.fetch_inbox(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
+        "sent" -> repository.fetch_sent(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
         "drafts" -> repository.fetch_drafts(limit = limit, cursor = cursor)
-        "starred" -> repository.fetch_starred(limit = limit, cursor = cursor, order = list_order)
-        "trash" -> repository.fetch_trash(limit = limit, cursor = cursor, order = list_order)
-        "spam" -> repository.fetch_spam(limit = limit, cursor = cursor, order = list_order)
-        "archive" -> repository.fetch_archive(limit = limit, cursor = cursor, order = list_order)
+        "starred" -> repository.fetch_starred(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
+        "trash" -> repository.fetch_trash(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
+        "spam" -> repository.fetch_spam(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
+        "archive" -> repository.fetch_archive(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
         "scheduled" -> repository.fetch_scheduled(limit = limit, cursor = cursor, order = list_order)
-        "snoozed" -> repository.fetch_snoozed(limit = limit, cursor = cursor, order = list_order)
+        "snoozed" -> repository.fetch_snoozed(limit = limit, cursor = cursor, order = list_order, is_read = is_read)
         else -> when {
             is_all_mail_folder(folder) -> repository.fetch_inbox(
                 limit = limit,
@@ -5030,14 +5758,15 @@ class MailViewModel @Inject constructor(
                 order = list_order,
                 include_spam = all_mail_includes_spam(folder),
                 include_trash = all_mail_includes_trash(folder),
+                is_read = is_read,
             )
             folder.startsWith("label:") -> {
                 val label_token = folder.removePrefix("label:")
-                repository.fetch_inbox(limit = limit, item_type = null, label_token = label_token, offset = cursor?.toIntOrNull(), order = list_order)
+                repository.fetch_inbox(limit = limit, item_type = null, label_token = label_token, offset = cursor?.toIntOrNull(), order = list_order, is_read = is_read)
             }
             folder.startsWith("tag:") -> {
                 val tag_token = folder.removePrefix("tag:")
-                repository.fetch_inbox(limit = limit, item_type = null, tag_token = tag_token, offset = cursor?.toIntOrNull(), order = list_order)
+                repository.fetch_inbox(limit = limit, item_type = null, tag_token = tag_token, offset = cursor?.toIntOrNull(), order = list_order, is_read = is_read)
             }
             folder.startsWith("routing:") -> {
                 val routing_scope = parse_alias_routing_folder(folder)
@@ -5049,14 +5778,41 @@ class MailViewModel @Inject constructor(
                     offset = cursor?.toIntOrNull(),
                     order = list_order,
                     direction = alias_direction_query(routing_scope.direction),
+                    is_read = is_read,
                 )
             }
             !is_folder_token(folder) -> Result.success(
                 InboxPage(items = emptyList(), has_more = false, next_cursor = null, total = 0),
             )
-            else -> repository.fetch_inbox(limit = limit, item_type = null, label_token = folder, offset = cursor?.toIntOrNull(), order = list_order)
+            else -> repository.fetch_inbox(limit = limit, item_type = null, label_token = folder, offset = cursor?.toIntOrNull(), order = list_order, is_read = is_read)
         }
     }
+}
+
+internal fun with_category(
+    item: InboxItem,
+    category: String,
+    raw: org.astermail.android.api.mail.MailItem = item.raw_item,
+): InboxItem {
+    val meta = (raw.metadata ?: org.astermail.android.api.mail.MailItemMetadata())
+        .copy(category = category, category_pinned = true)
+    return item.copy(category = category, raw_item = raw.copy(metadata = meta))
+}
+
+internal fun restore_category(item: InboxItem, before: InboxItem): InboxItem {
+    val before_meta = before.raw_item.metadata
+    val meta = item.raw_item.metadata?.copy(
+        category = before_meta?.category,
+        category_pinned = before_meta?.category_pinned ?: false,
+    )
+    return item.copy(
+        category = before.category,
+        raw_item = item.raw_item.copy(
+            metadata = meta,
+            encrypted_metadata = before.raw_item.encrypted_metadata,
+            metadata_nonce = before.raw_item.metadata_nonce,
+        ),
+    )
 }
 
 fun org.astermail.android.storage.search.DecryptedMailEntity.to_inbox_item(): InboxItem = InboxItem(
@@ -5083,8 +5839,16 @@ fun org.astermail.android.storage.search.DecryptedMailEntity.to_inbox_item(): In
     display_sender_email = display_sender_email,
     to_addresses = to_addresses?.split(",")?.filter { it.isNotBlank() } ?: emptyList(),
     routing_token = routing_token,
+    sender_verification = sender_verification,
     raw_item = org.astermail.android.api.mail.MailItem(
         id = id,
+        item_type = item_type,
+        spf_result = spf_result,
+        dkim_result = dkim_result,
+        dmarc_result = dmarc_result,
+        sender_aligned = sender_aligned,
+        sender_verified = sender_verified,
+        sender_verified_domain = sender_verified_domain,
         is_external = is_external,
         system_origin = system_origin,
         has_recipient_key = has_recipient_key,
@@ -5101,12 +5865,50 @@ fun org.astermail.android.storage.search.DecryptedMailEntity.to_inbox_item(): In
 
 private val folders_keeping_archived = setOf("archive", "starred", "snoozed", "sent")
 
+private val CURSOR_PAGED_FOLDERS = setOf("inbox", "sent", "drafts", "starred", "trash", "spam", "archive", "snoozed")
+
+internal fun resume_retry_due(loaded_at: Long?, resumed_at: Long): Boolean =
+    loaded_at == null || loaded_at < resumed_at
+
+internal fun folder_uses_offset_cursor(folder: String): Boolean = when {
+    folder == "scheduled" -> true
+    folder in CURSOR_PAGED_FOLDERS || is_all_mail_folder(folder) -> false
+    folder.startsWith("label:") || folder.startsWith("tag:") || folder.startsWith("routing:") -> true
+    else -> is_folder_token(folder)
+}
+
+internal fun rebase_offset_cursor(cursor: String, loaded_count: Int): String {
+    val offset = cursor.toIntOrNull() ?: return cursor
+    return minOf(offset, maxOf(0, loaded_count)).toString()
+}
+
+internal fun merge_scope_read_ids(
+    live: List<String>,
+    loaded: Set<String>,
+    collected: List<String>,
+): List<String> = (live + collected.filter { it !in loaded }).distinct()
+
 internal fun folder_keeps_archived(folder: String): Boolean =
     folder in folders_keeping_archived ||
         is_all_mail_folder(folder) ||
         folder.startsWith("label:") ||
         folder.startsWith("tag:") ||
         folder.startsWith("routing:")
+
+internal fun folder_known_empty(folder: String, stats: MailUserStatsResponse?): Boolean {
+    if (stats == null) return false
+    val count = when (folder) {
+        "drafts" -> stats.drafts
+        "scheduled" -> stats.scheduled
+        "snoozed" -> stats.snoozed
+        "starred" -> stats.starred
+        "archive" -> stats.archived
+        "spam" -> stats.spam
+        "trash" -> stats.trash
+        else -> return false
+    }
+    return count == 0
+}
 
 internal fun folder_matches_item(folder: String, item: InboxItem): Boolean = when (folder) {
     "inbox" -> !item.is_trashed && !item.is_archived && !item.is_spam && item.labels.isEmpty()
@@ -5145,7 +5947,7 @@ internal data class SendResultMessage(val res_id: Int, val arg: Int?)
 
 internal fun send_result_message_for(error: Throwable): SendResultMessage = when (error) {
     is TransientSendException -> SendResultMessage(R.string.send_still_trying, null)
-    is MixedRecipientsException -> SendResultMessage(R.string.cannot_mix_recipients, null)
+    is MixedRecipientsPasswordException -> SendResultMessage(R.string.password_needs_outside_recipients_only, null)
     is SentCopyAttachmentException ->
         SendResultMessage(R.string.sent_copy_attachments_missing, error.failed_count)
     else -> SendResultMessage(R.string.send_problem_failed_message, null)

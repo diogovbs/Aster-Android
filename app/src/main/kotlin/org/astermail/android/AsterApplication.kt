@@ -58,7 +58,22 @@ private val secure_prefs_namespaces = listOf(
 )
 
 @HiltAndroidApp
-class AsterApplication : Application(), ImageLoaderFactory {
+class AsterApplication : Application(), ImageLoaderFactory, androidx.work.Configuration.Provider {
+
+    override val workManagerConfiguration: androidx.work.Configuration
+        get() = androidx.work.Configuration.Builder()
+            .setInitializationExceptionHandler { report_work_initialization_failure() }
+            .build()
+
+    private fun report_work_initialization_failure() {
+        runCatching {
+            org.astermail.android.api.errors.ClientErrorReporter.report(
+                feature = "app",
+                error_code = "work_initialization_failed",
+                severity = "warning",
+            )
+        }
+    }
 
     private fun install_crash_reporting() {
         runCatching {
@@ -91,6 +106,7 @@ class AsterApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         install_crash_reporting()
+        disable_compose_content_capture()
         runCatching {
             org.astermail.android.settings.app_language.migrate_to_platform(this)
             org.astermail.android.settings.app_language.apply_to_application(this)
@@ -134,6 +150,11 @@ class AsterApplication : Application(), ImageLoaderFactory {
         start_deferred_startup()
     }
 
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+    private fun disable_compose_content_capture() {
+        androidx.compose.ui.contentcapture.ContentCaptureManager.isEnabled = false
+    }
+
     private fun start_secure_prefs_warm() {
         Thread {
             runCatching {
@@ -147,6 +168,7 @@ class AsterApplication : Application(), ImageLoaderFactory {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             runCatching { prime_profile_resolver() }
             runCatching { org.astermail.android.util.purge_sensitive_export_files(this) }
+            runCatching { org.astermail.android.share.clear_opened_attachments(cacheDir) }
             runCatching { org.astermail.android.ui.mail.purge_legacy_skeleton_rows(this) }
             runCatching { org.astermail.android.notifications.MailPollingWorker.create_channel(this) }
             runCatching { org.astermail.android.notifications.LoginAlertNotifier.create_channel(this) }

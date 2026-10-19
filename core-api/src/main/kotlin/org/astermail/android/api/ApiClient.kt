@@ -147,6 +147,20 @@ interface TokenProvider {
     suspend fun clear()
 }
 
+private val sign_in_path_suffixes = listOf(
+    "/auth/login",
+    "/auth/register",
+    "/auth/salt",
+    "/auth/refresh",
+    "/auth/totp/verify",
+    "/auth/totp/backup-code",
+    "/auth/hardware-keys/assert/initiate",
+    "/auth/hardware-keys/assert/verify",
+)
+
+fun is_sign_in_path(path: String): Boolean =
+    path.contains("/recovery/") || sign_in_path_suffixes.any { path.endsWith(it) }
+
 fun build_user_agent(app_version: String = BuildConfig.VERSION_NAME): String {
     val android_version = Build.VERSION.RELEASE ?: "0"
     return "AsterMail-Android/$app_version (Android $android_version)"
@@ -204,7 +218,15 @@ class ApiClient(
                 connectionPool(okhttp3.ConnectionPool(5, 90, java.util.concurrent.TimeUnit.SECONDS))
             }
             addInterceptor(okhttp3.Interceptor { chain ->
-                if (!org.astermail.android.api.network.low_network_state.active()) {
+                try {
+                    chain.proceed(chain.request())
+                } catch (error: java.net.SocketTimeoutException) {
+                    org.astermail.android.api.network.low_network_state.note_timeout()
+                    throw error
+                }
+            })
+            addInterceptor(okhttp3.Interceptor { chain ->
+                if (!org.astermail.android.api.network.low_network_state.extend_timeouts()) {
                     chain.proceed(chain.request())
                 } else {
                     val extended = org.astermail.android.api.network.effective_request_timeout_ms(
@@ -263,14 +285,8 @@ class ApiClient(
                     token_provider.refresh(failed)
                 }
                 sendWithoutRequest { request ->
-                    val path = request.url.buildString()
-                    val is_public = path.endsWith("/auth/login") ||
-                        path.endsWith("/auth/register") ||
-                        path.endsWith("/auth/salt") ||
-                        path.endsWith("/auth/refresh") ||
-                        path.contains("/recovery/")
                     val same_host = api_host == null || request.url.host == api_host
-                    !is_public && same_host
+                    !is_sign_in_path(request.url.build().encodedPath) && same_host
                 }
             }
         }
@@ -285,6 +301,7 @@ class ApiClient(
 
         HttpResponseValidator {
             handleResponseExceptionWithRequest { cause, _ ->
+                note_slow_link(cause)
                 when (cause) {
                     is ClientRequestException -> throw map_http_status(cause.response.status.value, safe_read_body(cause.response))
                     is ServerResponseException -> throw ApiError.ServerError(cause.response.status.value)
@@ -296,12 +313,15 @@ class ApiClient(
 
     init {
         ClientErrorReporter.configure(base_url, release_name)
+        http.requestPipeline.intercept(io.ktor.client.request.HttpRequestPipeline.Before) {
+            apply_low_network_timeout(context)
+        }
         http.plugin(HttpSend).intercept { request ->
             apply_folder_unlock_header(request)
-            apply_low_network_timeout(request)
             val original_call: HttpClientCall = try {
                 execute(request)
             } catch (error: Throwable) {
+                note_slow_link(error)
                 report_transport_failure(
                     request.url.encodedPathSegments.joinToString("/"),
                     error,
@@ -386,9 +406,27 @@ class ApiClient(
         }
     }
 
+    private fun is_timeout_chain(error: Throwable): Boolean {
+        var current: Throwable? = error
+        repeat(6) {
+            val step = current ?: return false
+            if (step is io.ktor.client.plugins.HttpRequestTimeoutException ||
+                step is java.net.SocketTimeoutException
+            ) {
+                return true
+            }
+            current = step.cause?.takeIf { it !== step }
+        }
+        return false
+    }
+
+    private fun note_slow_link(error: Throwable) {
+        if (is_timeout_chain(error)) org.astermail.android.api.network.low_network_state.note_timeout()
+    }
+
     private fun apply_low_network_timeout(request: HttpRequestBuilder) {
         runCatching {
-            if (!org.astermail.android.api.network.low_network_state.active()) return
+            if (!org.astermail.android.api.network.low_network_state.extend_timeouts()) return
             val existing = request.getCapabilityOrNull(HttpTimeoutCapability)
             if (existing?.requestTimeoutMillis != null) return
             val extended = org.astermail.android.api.network.LOW_NETWORK_MIN_REQUEST_TIMEOUT_MS
@@ -421,6 +459,7 @@ class ApiClient(
     }
 
     private suspend fun reattach_fresh_bearer(request: HttpRequestBuilder) {
+        if (is_sign_in_path(request.url.build().encodedPath)) return
         runCatching {
             val tokens = token_provider.load() ?: return
             request.headers.remove(HttpHeaders.Authorization)

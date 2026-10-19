@@ -509,6 +509,28 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `recovery email presence is unknown until the server answers`() = runTest {
+        assertFalse(vm.state.value.recovery_email_known)
+
+        coEvery { recovery_email_api.get_state() } returns
+            org.astermail.android.api.recovery_email.RecoveryEmailStateResponse(exists = true)
+        vm.refresh_recovery_email_presence()
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.recovery_email_known)
+        assertTrue(vm.state.value.recovery_email_set)
+    }
+
+    @Test
+    fun `failed recovery email check leaves presence unknown`() = runTest {
+        coEvery { recovery_email_api.get_state() } throws java.io.IOException("offline")
+        vm.refresh_recovery_email_presence()
+        advanceUntilIdle()
+
+        assertFalse(vm.state.value.recovery_email_known)
+    }
+
+    @Test
     fun `load_ghost_aliases populates list`() = runTest {
         val aliases = listOf(
             GhostAlias(id = "g1", domain = "astermail.org", encrypted_local_part = ""),
@@ -3097,5 +3119,101 @@ class SettingsViewModelTest {
         vm.load_subscription()
         advanceUntilIdle()
         assertNull(vm.state.value.error)
+    }
+
+    private fun preferences_vm(api: PreferencesApi): SettingsViewModel = SettingsViewModel(
+        auth_api = auth_api,
+        user_api = user_api,
+        settings_api = settings_api,
+        labels_api = labels_api,
+        family_api = family_api,
+        tags_api = tags_api,
+        preferences_api = api,
+        signatures_api = signatures_api,
+        ghost_alias_api = ghost_alias_api,
+        auto_forward_api = auto_forward_api,
+        developer_api = developer_api,
+        subscriptions_api = subscriptions_api,
+        recovery_email_api = recovery_email_api,
+        security_api = security_api,
+        encryption_api = encryption_api,
+        alias_detail_api = alias_detail_api,
+        recovery_api = recovery_api,
+        mail_rules_api = mail_rules_api,
+        keys_api = keys_api,
+        auth_repository = auth_repository,
+        session_key_store = session_key_store,
+        token_store = token_store,
+        account_store = account_store,
+        preferences_cache = preferences_cache,
+        theme_store = theme_store,
+        context = context,
+    ).also { it.default_dispatcher = dispatcher }
+
+    @Test
+    fun `load_preferences does not restart an in-flight load`() = runTest {
+        val api = mockk<PreferencesApi>(relaxed = true)
+        val gate = kotlinx.coroutines.CompletableDeferred<org.astermail.android.api.preferences.EncryptedPreferencesResponse>()
+        var cancelled = false
+        coEvery { api.get_encrypted_preferences() } coAnswers {
+            try {
+                gate.await()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                cancelled = true
+                throw e
+            }
+        }
+        coEvery { api.get_preferences_raw() } returns """{"theme":"dark"}"""
+        val fresh_vm = preferences_vm(api)
+        advanceUntilIdle()
+
+        fresh_vm.load_preferences()
+        advanceUntilIdle()
+        gate.complete(org.astermail.android.api.preferences.EncryptedPreferencesResponse())
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { api.get_encrypted_preferences() }
+        assertFalse(cancelled)
+        assertEquals("dark", fresh_vm.state.value.preferences?.theme)
+        assertTrue(fresh_vm.state.value.preferences_authoritative)
+        assertFalse(fresh_vm.state.value.is_loading)
+    }
+
+    @Test
+    fun `forced load_preferences restarts an in-flight load`() = runTest {
+        val api = mockk<PreferencesApi>(relaxed = true)
+        val gate = kotlinx.coroutines.CompletableDeferred<org.astermail.android.api.preferences.EncryptedPreferencesResponse>()
+        coEvery { api.get_encrypted_preferences() } coAnswers { gate.await() }
+        coEvery { api.get_preferences_raw() } returns """{"theme":"dark"}"""
+        val fresh_vm = preferences_vm(api)
+        advanceUntilIdle()
+
+        fresh_vm.load_preferences(force = true)
+        advanceUntilIdle()
+        gate.complete(org.astermail.android.api.preferences.EncryptedPreferencesResponse())
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { api.get_encrypted_preferences() }
+        assertEquals("dark", fresh_vm.state.value.preferences?.theme)
+    }
+
+    @Test
+    fun `load_preferences after account switch fetches while previous load is in flight`() = runTest {
+        val api = mockk<PreferencesApi>(relaxed = true)
+        val gate = kotlinx.coroutines.CompletableDeferred<org.astermail.android.api.preferences.EncryptedPreferencesResponse>()
+        coEvery { api.get_encrypted_preferences() } coAnswers { gate.await() }
+        coEvery { api.get_preferences_raw() } returns """{"theme":"dark"}"""
+        val fresh_vm = preferences_vm(api)
+        advanceUntilIdle()
+
+        fresh_vm.reset_for_account_switch()
+        fresh_vm.load_preferences()
+        advanceUntilIdle()
+        gate.complete(org.astermail.android.api.preferences.EncryptedPreferencesResponse())
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { api.get_encrypted_preferences() }
+        assertEquals("dark", fresh_vm.state.value.preferences?.theme)
+        assertTrue(fresh_vm.state.value.preferences_authoritative)
     }
 }
