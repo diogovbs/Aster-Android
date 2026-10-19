@@ -21,6 +21,7 @@
 
 package org.astermail.android.ui.settings
 
+import org.astermail.android.ui.common.vertical_scroll_with_indicator
 import compose.icons.TablerIcons
 import compose.icons.tablericons.*
 
@@ -114,7 +115,6 @@ internal fun build_settings_sections(is_family: Boolean) = listOf(
             settings_row_item("security", R.string.settings_security, icon = TablerIcons.Shield),
             settings_row_item("encryption", R.string.settings_encryption, icon = TablerIcons.Key),
             settings_row_item("trusted_devices", R.string.trusted_devices, icon = TablerIcons.DeviceDesktop),
-            settings_row_item("connection", R.string.settings_connection, icon = TablerIcons.Wifi),
         ),
     ),
     settings_section(
@@ -198,7 +198,7 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+                .vertical_scroll_with_indicator(),
         ) {
             Spacer(Modifier.size(AsterSpacing.md))
             val live_account by settings_vm.account_store.current_account.collectAsStateWithLifecycle(
@@ -229,7 +229,7 @@ fun SettingsScreen(
                         .padding(horizontal = AsterSpacing.lg)
                         .fillMaxWidth(),
                 ) {
-                    Column(modifier = Modifier.padding(vertical = AsterSpacing.xs)) {
+                    Column {
                         section.rows.forEachIndexed { index, row ->
                             if (index > 0) settings_row_gap()
                             settings_row(row) {

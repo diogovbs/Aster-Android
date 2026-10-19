@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.ui.graphics.vector.ImageVector
 import org.astermail.android.R
 import org.astermail.android.design.auto_mirrored
+import org.astermail.android.ui.icons.mail_check_icon
 
 data class ToolbarAction(
     val id: String,
@@ -44,7 +45,7 @@ val toolbar_action_catalog: List<ToolbarAction> = listOf(
     ToolbarAction("label", R.string.add_label, TablerIcons.Tag),
     ToolbarAction("star", R.string.star, TablerIcons.Star),
     ToolbarAction("snooze", R.string.snooze, TablerIcons.Clock),
-    ToolbarAction("spam", R.string.report_spam, TablerIcons.Ban),
+    ToolbarAction("spam", R.string.report_spam, spam_action_icon(is_spam = false)),
     ToolbarAction("reply", R.string.reply, TablerIcons.ArrowBackUp.auto_mirrored()),
     ToolbarAction("forward", R.string.forward, TablerIcons.MailForward),
 )
@@ -58,7 +59,7 @@ val selection_toolbar_action_catalog: List<ToolbarAction> = listOf(
     ToolbarAction("archive", R.string.swipe_archive, TablerIcons.Archive),
     ToolbarAction("star", R.string.star, TablerIcons.Star),
     ToolbarAction("snooze", R.string.snooze, TablerIcons.Clock),
-    ToolbarAction("spam", R.string.report_spam, TablerIcons.Ban),
+    ToolbarAction("spam", R.string.report_spam, spam_action_icon(is_spam = false)),
 )
 
 private const val prefs_name = "aster_toolbar"
@@ -113,6 +114,9 @@ fun toolbar_action_by_id(id: String): ToolbarAction? = toolbar_action_catalog.fi
 
 fun selection_toolbar_action_by_id(id: String): ToolbarAction? =
     selection_toolbar_action_catalog.find { it.id == id }
+
+fun spam_action_icon(is_spam: Boolean): ImageVector =
+    if (is_spam) mail_check_icon else TablerIcons.AlertTriangle
 
 private val star_off_toolbar_action = ToolbarAction("star", R.string.unstar, TablerIcons.StarOff)
 
